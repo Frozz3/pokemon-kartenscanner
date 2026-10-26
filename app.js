@@ -825,6 +825,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   const I = {
     cam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
     pics: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 8"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg>',
     find: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
   };
   const subLine = c => [c.set, c.number].filter(Boolean).map((v, i, a) => (i === a.length - 1 && c.number) ? `<span class="mono">${esc(v)}</span>` : esc(v)).join(" · ") || "Set unbekannt";
@@ -964,7 +965,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         </div>
         ${scanButtons}
       </section>
-      ${items.length ? `<ul class="list">${items.slice().reverse().map(rowHTML).join("")}</ul>` : `<div class="empty">Noch keine Karte in dieser Session. Tippe auf „Karte scannen“.</div>`}
+      ${items.length ? `<ul class="list">${items.slice().reverse().map(rowHTML).join("")}</ul><p class="fine" style="margin:-6px 0 0">Doppelt gescannt? Karte nach rechts wischen, um sie zu entfernen.</p>` : `<div class="empty">Noch keine Karte in dieser Session. Tippe auf „Karte scannen“.</div>`}
       <div class="session-foot">
         <button class="btn primary" type="button" data-act="finish" ${ok.length && !pending ? "" : "disabled"}>${pending ? "Warte auf Erkennung …" : "Session abschließen"}</button>
         <button class="btn ghost danger" type="button" data-act="discard">Verwerfen</button>
@@ -980,7 +981,12 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       <button class="btn primary small" type="button" data-act="migrate" ${mg ? "disabled" : ""}>${mg ? `Übertrage ${mg.n}/${mg.total} …` : "In mein Konto übernehmen"}</button></div>`;
   }
 
+  const swipeWrap = (id, inner) => `<li class="swipe" data-swipe-id="${esc(id)}"><div class="swipe-bg" aria-hidden="true">${I.trash}<span>Löschen</span></div>${inner}</li>`;
   function rowHTML(it) {
+    const inner = rowInner(it).replace(/^<li /, "<div ").replace(/<\/li>$/, "</div>").replace('class="row', 'class="row swipe-fg');
+    return swipeWrap(it.id, inner);
+  }
+  function rowInner(it) {
     const c = it.card || {};
     const mini = `<div class="mini">${imgTag(thumbOf(it.thumb, c), "Scan")}</div>`;
     if (it.status === "pending") return `<li class="row" aria-busy="true">${mini}<div style="min-width:0"><div class="stage">${esc(state.stage.get(it.id) || "Wird bearbeitet …")}</div><div class="bar"></div></div><div></div></li>`;
@@ -1073,7 +1079,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       title = "Session abschließen";
       body = `<div class="stack">
         <div class="endbetrag"><div class="eyebrow">Endbetrag dieser Session</div><div class="big">${money(total)}</div><div>${count} Karte${count === 1 ? "" : "n"}</div></div>
-        <ul class="compact">${ok.map(i => `<li><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ""} <span class="muted">${esc(i.card.number || "")} · ${esc(srcLabel(i.card))}</span></span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span></li>`).join("")}</ul>
+        <ul class="compact">${ok.map(i => swipeWrap(i.id, `<div class="cline swipe-fg"><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ""} <span class="muted">${esc(i.card.number || "")} · ${esc(srcLabel(i.card))}</span></span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span><button class="icon-del" type="button" data-act="del-item" data-id="${esc(i.id)}" aria-label="${esc(i.card.name)} entfernen">${I.trash}</button></div>`)).join("")}</ul>
+        <p class="fine" style="margin:0">Doppelt gescannt? Nach rechts wischen oder auf den Mülleimer tippen.</p>
         <p class="fine">Grundlage ist der Cardmarket-Trendpreis (Near Mint) aus TCGdex.${ki ? ` ${ki} Karte${ki === 1 ? "" : "n"} ohne Marktpreis ${ki === 1 ? "ist" : "sind"} mit der KI-Schätzung oder ohne Wert eingerechnet.` : ""} Der Zustand deiner Karte kann den erzielbaren Preis senken.</p>
         <button class="btn primary block" type="button" data-act="commit" ${state.busy ? "disabled" : ""}>${state.busy ? "Wird übernommen …" : "Zum Inventar hinzufügen"}</button>
       </div>`;
@@ -1151,6 +1158,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <datalist id="variants"><option value="Normal"><option value="Holo"><option value="Reverse Holo"><option value="1st Edition"><option value="Shadowless"><option value="Promo"></datalist>
         <p class="fine full" style="margin:0">Änderst du den Preis, gilt er als dein eigener Preis und wird bei Aktualisierungen nicht überschrieben. Leer lassen setzt ihn zurück. Änderst du Name, Set, Nummer oder Variante, wird der Marktpreis neu gesucht.</p>
         <button class="btn primary full" type="submit">Speichern</button>
+        ${isItem ? `<button class="btn danger full" type="button" data-act="del-item" data-id="${esc(src.id)}">${I.trash}<span>Aus Session entfernen</span></button>` : ""}
       </form>`;
     } else if (s.type === "search") {
       title = "Karte suchen";
@@ -1208,18 +1216,88 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   }
 
   // ---------- toast ----------
-  let toastTimer;
-  function toast(msg) {
+  let toastTimer, toastExpire = null;
+  function toast(msg, opts = {}) {
     let t = $("#toast");
-    if (!t) { t = document.createElement("div"); t.id = "toast"; t.setAttribute("role", "status");
-      t.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px) + 14px);z-index:40;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;max-width:min(92vw,520px);box-shadow:var(--shadow)";
-      document.body.appendChild(t); }
-    t.textContent = msg; t.hidden = false;
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 4800);
+    if (!t) { t = document.createElement("div"); t.id = "toast"; t.className = "toast"; t.setAttribute("role", "status"); document.body.appendChild(t); }
+    if (toastExpire) { const f = toastExpire; toastExpire = null; f(); }
+    t.textContent = "";
+    const sp = document.createElement("span"); sp.textContent = msg; t.appendChild(sp);
+    if (opts.action) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "toast-btn"; b.textContent = opts.action.label;
+      b.onclick = ev => { ev.stopPropagation(); toastExpire = null; clearTimeout(toastTimer); t.hidden = true; opts.action.fn(); };
+      t.appendChild(b);
+    }
+    toastExpire = opts.onExpire || null;
+    t.hidden = false; clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; if (toastExpire) { const f = toastExpire; toastExpire = null; f(); } }, opts.duration || 4800);
   }
+
+  // ---------- delete scans (swipe right or trash button), with undo ----------
+  async function removeWithUndo(id) {
+    const it = getItem(id); if (!it) return;
+    try { await remove("items", id); } catch (_) { render(); if (state.sheet) renderSheet(); return; }
+    state.running.delete(id); state.stage.delete(id);
+    render();
+    const sh = state.sheet;
+    if (sh) {
+      if ((sh.type === "edit" && sh.id === id) || (sh.type === "finish" && !openItems().some(i => i.status === "ok"))) closeSheet();
+      else renderSheet();
+    }
+    const name = (it.card && it.card.name) || "Scan";
+    toast(`${name} entfernt`, {
+      duration: 6000,
+      action: { label: "Rückgängig", fn: async () => { try { await save("items", it); } catch (_) { return; } render(); if (state.sheet) renderSheet(); } },
+      onExpire: () => { if (it.imageId && !getItem(id)) Img.del(it.imageId); },
+    });
+  }
+
+  const SWIPE_ARM = 0.38; // share of the row width that arms the delete
+  let sw = null, swallowClick = false;
+  document.addEventListener("pointerdown", e => {
+    const li = e.target.closest(".swipe[data-swipe-id]");
+    if (!li || (e.pointerType === "mouse" && e.button !== 0) || e.target.closest("button, a, input, select")) return;
+    const fg = li.querySelector(".swipe-fg"); if (!fg) return;
+    sw = { li, fg, id: li.dataset.swipeId, x0: e.clientX, y0: e.clientY, dx: 0, active: false, armed: false, w: li.offsetWidth, pid: e.pointerId };
+  });
+  document.addEventListener("pointermove", e => {
+    if (!sw || e.pointerId !== sw.pid) return;
+    const dx = e.clientX - sw.x0, dy = e.clientY - sw.y0;
+    if (!sw.active) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { sw = null; return; }
+      if (dx > 10 && dx > Math.abs(dy) * 1.2) { sw.active = true; sw.li.classList.add("dragging"); try { sw.li.setPointerCapture(e.pointerId); } catch (_) {} }
+      else return;
+    }
+    e.preventDefault();
+    sw.dx = Math.max(0, dx);
+    const p = Math.min(1, sw.dx / (sw.w * SWIPE_ARM));
+    sw.fg.style.transform = `translateX(${sw.dx}px)`;
+    sw.li.style.setProperty("--p", p.toFixed(3));
+    const armed = p >= 1;
+    if (armed !== sw.armed) { sw.armed = armed; sw.li.classList.toggle("armed", armed); if (armed && navigator.vibrate) navigator.vibrate(12); }
+  }, { passive: false });
+  function endSwipe(e) {
+    if (!sw || (e && e.pointerId !== sw.pid)) return;
+    const s = sw; sw = null;
+    if (!s.active) return;
+    swallowClick = true; setTimeout(() => { swallowClick = false; }, 350);
+    s.li.classList.remove("dragging");
+    if (s.armed && e.type !== "pointercancel") {
+      s.li.style.height = s.li.offsetHeight + "px";
+      s.li.classList.add("removing");
+      s.fg.style.transform = `translateX(${s.w + 40}px)`;
+      requestAnimationFrame(() => requestAnimationFrame(() => { s.li.style.height = "0px"; }));
+      setTimeout(() => removeWithUndo(s.id), 340);
+    } else {
+      s.fg.style.transform = ""; s.li.style.setProperty("--p", "0"); s.li.classList.remove("armed");
+    }
+  }
+  document.addEventListener("pointerup", endSwipe);
+  document.addEventListener("pointercancel", endSwipe);
 
   // ---------- events ----------
   document.addEventListener("click", e => {
+    if (swallowClick && e.target.closest(".swipe")) { e.preventDefault(); return; }
     const tabBtn = e.target.closest("[data-tab]");
     if (tabBtn) { state.tab = tabBtn.dataset.tab; closeSheet(); render(); window.scrollTo(0, 0); return; }
     const el = e.target.closest("[data-act]"); if (!el) return;
@@ -1238,7 +1316,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "cam-auto": settings.auto = !settings.auto; updateCamTools(); frameState = "x"; setFrameState(""); toast(settings.auto ? "Automatisch scannen ist an." : "Automatisch scannen ist aus. Tippe auf den Auslöser."); break;
       case "cam-sound": settings.sound = !settings.sound; updateCamTools(); if (settings.sound) { audioUnlock(); cashSound(false); } break;
       case "retry": retryItem(id); break;
-      case "remove": removeItem(id); break;
+      case "remove": case "del-item": removeWithUndo(id); break;
       case "edit-item": openSheet({ type: "edit", kind: "item", id }); break;
       case "search-item": openSheet({ type: "search", target: { kind: "item", id }, ...searchFor(it && it.card) }); break;
       case "search-card": openSheet({ type: "search", target: { kind: "card", id }, ...searchFor(card) }); break;
@@ -1267,7 +1345,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   });
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") { if (!$("#camera").hidden) { closeCamera(); render(); } else if (state.sheet) closeSheet(); }
-    if ((e.key === "Enter" || e.key === " ") && e.target.matches("li[data-act]")) { e.preventDefault(); e.target.click(); }
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches("[role=button][data-act]")) { e.preventDefault(); e.target.click(); }
   });
   $("#camFallback").addEventListener("change", e => { handleFiles(e.target.files); e.target.value = ""; });
   $("#galIn").addEventListener("change", e => { handleFiles(e.target.files); e.target.value = ""; });
