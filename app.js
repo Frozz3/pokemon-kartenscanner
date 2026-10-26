@@ -40,6 +40,7 @@
       get sort() { return read("sort", "value"); }, set sort(v) { write("sort", v); },
       get sound() { return read("sound", "1") === "1"; }, set sound(v) { write("sound", v ? "1" : "0"); },
       get auto() { return read("auto", "1") === "1"; }, set auto(v) { write("auto", v ? "1" : "0"); },
+      get idle() { const n = Number(read("idle", "15")); return isFinite(n) ? n : 15; }, set idle(v) { write("idle", String(v)); },
     };
   })();
 
@@ -1482,6 +1483,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         </form>
         <div class="notice stack" style="gap:8px"><strong>Konto</strong>
           <span>Angemeldet als <strong>${esc(state.user && state.user.email)}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
+          <label class="setrowlbl" for="set-idle">Automatisch abmelden nach
+            <select class="field" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l} ohne Aktivität</option>`).join("").replace(">Nie ohne Aktivität<", ">Nie<")}</select></label>
+          <span class="fine">Während du scannst oder die App Preise lädt, wirst du nicht abgemeldet. 30 Sekunden vorher kommt eine Warnung.</span>
           <button class="btn" type="button" data-act="logout">Abmelden</button>
         </div>
         <div class="notice stack" style="gap:8px"><strong>Sicherungsdatei</strong>
@@ -1495,6 +1499,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       <div class="sheet-head"><h2>${esc(title)}</h2><button class="x" type="button" data-act="close" aria-label="Schließen">×</button></div>${body}</div></div>`;
     const ef = $("#editForm"); if (ef) ef.onsubmit = e => { e.preventDefault(); saveEdit(ef); };
     const sf = $("#searchForm"); if (sf) sf.onsubmit = e => { e.preventDefault(); runSearch(sf); };
+    const si = $("#set-idle"); if (si) si.onchange = () => { settings.idle = Number(si.value); markActive(true); toast(settings.idle ? `Automatische Abmeldung nach ${idleLabel()} ohne Aktivität.` : "Automatische Abmeldung ist aus."); };
     const st = $("#settingsForm"); if (st) st.onsubmit = e => {
       e.preventDefault();
       const k = String(new FormData(st).get("key") || "").trim();
@@ -1510,7 +1515,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     let t = $("#toast");
     if (!t) { t = document.createElement("div"); t.id = "toast"; t.className = "toast"; t.setAttribute("role", "status"); document.body.appendChild(t); }
     if (toastExpire) { const f = toastExpire; toastExpire = null; f(); }
-    t.textContent = "";
+    t.textContent = ""; t.dataset.kind = opts.kind || "";
     const sp = document.createElement("span"); sp.textContent = msg; t.appendChild(sp);
     if (opts.action) {
       const b = document.createElement("button"); b.type = "button"; b.className = "toast-btn"; b.textContent = opts.action.label;
@@ -1627,7 +1632,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "key-del": settings.apiKey = ""; toast("Schlüssel gelöscht."); renderSheet(); render(); break;
       case "export": exportData(); break;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
-      case "logout": closeSheet(); sb.auth.signOut().catch(() => {}); break;
+      case "logout": closeSheet(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
       case "open-set": openSheet({ type: "set", id, filter: "missing" }); break;
       case "set-filter": state.sheet.filter = el.dataset.f; renderSheet(); break;
@@ -1670,6 +1675,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const user = session ? session.user : null;
     if (!user) { state.user = null; state.recovery = false; clearData(); render(); return; }
     if (state.user && state.user.id === user.id) { state.user = user; render(); return; }
+    // App reopened after a long break: the old login is not resumed.
+    if (event === "INITIAL_SESSION" && idleExpired()) { idleLogout(); return; }
+    markActive(true);
     state.user = user; clearData(); state.authMsg = null; state.authErr = null; render();
     try { await loadAll(); } catch (e) { toast("Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); }
     maybeAutoRefresh();
@@ -1677,6 +1685,47 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.legacy = L && ((L.cards || []).length || (L.sessions || []).length || (L.items || []).length) ? L : null;
     render();
   }
+
+  // ---------- automatic logout after inactivity ----------
+  // The last activity time is kept in localStorage, so it also counts while the app was closed or in the background.
+  const IDLE_OPTIONS = [[0, "Nie"], [5, "5 Minuten"], [15, "15 Minuten"], [30, "30 Minuten"], [60, "1 Stunde"]];
+  const IDLE_WARN = 30e3;
+  const idleLabel = () => (IDLE_OPTIONS.find(o => o[0] === settings.idle) || [0, settings.idle + " Minuten"])[1];
+  let lastActive = Date.now(), lastActiveSaved = 0, idleWarned = false;
+  try { lastActive = Number(localStorage.getItem("ks-active")) || Date.now(); } catch (_) {}
+  function markActive(force) {
+    lastActive = Date.now();
+    if (idleWarned) { idleWarned = false; const t = $("#toast"); if (t && t.dataset.kind === "idle") t.hidden = true; }
+    if (force || lastActive - lastActiveSaved > 5000) { lastActiveSaved = lastActive; try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} }
+  }
+  const appBusy = () => camOpen() || state.running.size > 0 || !!state.refreshing || !!state.migrating || state.busy || !!state.setPricesBusy || state.authBusy;
+  const idleExpired = () => { if (!settings.idle) return false; let t = lastActive; try { t = Math.max(t, Number(localStorage.getItem("ks-active")) || 0); } catch (_) {} return Date.now() - t >= settings.idle * 60e3; };
+  async function idleLogout() {
+    if (camOpen()) closeCamera();
+    closeSheet();
+    idleWarned = false;
+    const t = $("#toast"); if (t && t.dataset.kind === "idle") t.hidden = true;
+    const label = idleLabel();
+    state.authMode = "login"; state.authErr = null;
+    try { await sb.auth.signOut({ scope: "local" }); } catch (_) {}
+    state.user = null; clearData();
+    state.authMsg = `Du wurdest nach ${label} ohne Aktivität abgemeldet.`;
+    render();
+  }
+  function idleCheck() {
+    if (!sb || !state.user || state.recovery || !settings.idle) return;
+    if (appBusy()) { markActive(); return; }
+    const limit = settings.idle * 60e3, idle = Date.now() - lastActive;
+    if (idleExpired()) { idleLogout(); return; }
+    if (idle >= limit - IDLE_WARN && !idleWarned) {
+      idleWarned = true;
+      toast(`Du wirst in ${Math.max(1, Math.round((limit - idle) / 1000))} Sekunden wegen Inaktivität abgemeldet.`, { duration: IDLE_WARN + 2000, kind: "idle", action: { label: "Angemeldet bleiben", fn: () => markActive(true) } });
+    }
+  }
+  for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) document.addEventListener(ev, () => markActive(), { capture: true, passive: true });
+  document.addEventListener("scroll", () => markActive(), { capture: true, passive: true });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} } else idleCheck(); });
+  setInterval(idleCheck, 5000);
 
   render();
   if (!window.supabase || !CFG.supabaseUrl || !CFG.supabaseKey) {

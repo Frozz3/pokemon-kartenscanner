@@ -225,6 +225,10 @@ a { color: var(--link); }
 .hist ul { list-style: none; margin: 0; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
 .hist li { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; border-top: 1px solid var(--line); padding-top: 6px; }
 
+/* Settings */
+.setrowlbl { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.setrowlbl .field { color: var(--ink); font-weight: 400; }
+
 /* Login */
 .auth { max-width: 440px; margin: 6vh auto 0; width: 100%; }
 .auth-logo { width: 64px; height: 64px; border-radius: 16px; }

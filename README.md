@@ -16,6 +16,7 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Set-Fortschritt:** Pro Set „47/189“ mit Fortschrittsbalken, fehlende und vorhandene Karten mit offiziellem Bild, Kosten zum Vervollständigen.
 - **Verlauf** aller abgeschlossenen Sessions.
 - **Konto mit Login:** E-Mail und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
+- **Automatische Abmeldung** nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.
 - **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
 - Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
 
