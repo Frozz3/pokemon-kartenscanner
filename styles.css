@@ -177,6 +177,15 @@ a { color: var(--link); }
 .sinfo b { display: block; color: var(--ink); font-family: var(--f-mono); font-weight: 600; }
 .stile.own .sinfo { color: var(--ink); }
 
+.filters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end; }
+.flbl { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); min-width: 0; }
+.flbl .field { color: var(--ink); font-weight: 400; }
+.range { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 6px; align-items: center; }
+.presets { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.chipbtn { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 99px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.chipbtn[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+@media (max-width: 420px) { .filters { grid-template-columns: 1fr; } }
+
 /* Swipe to delete */
 .swipe { position: relative; list-style: none; border-radius: 14px; overflow: hidden; touch-action: pan-y; --p: 0; }
 .swipe-bg { position: absolute; inset: 0; display: flex; align-items: center; gap: 8px; padding-left: 18px; background: var(--bad); color: #fff; font-weight: 700; font-size: 14px; opacity: calc(.35 + var(--p) * .65); }

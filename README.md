@@ -13,7 +13,7 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Inventar:** Kartenraster mit eigenem Foto und offiziellem Kartenbild, Suche, Sortierung, Detailansicht, Preise aktualisieren.
 - **Duplikat-Hinweis:** Schon in der Session gescannte Karten werden in der Kamera (mit Warnton) und in der Liste markiert, ebenso Karten, die schon im Inventar sind.
 - **Wertentwicklung:** Täglicher Schnappschuss des Sammlungswerts, automatische Preisaktualisierung einmal am Tag, Kurve, Veränderung über 7 und 30 Tage, Gewinner und Verlierer, Preisverlauf je Karte.
-- **Set-Fortschritt:** Pro Set „47/189“ mit Fortschrittsbalken, fehlende und vorhandene Karten mit offiziellem Bild, Kosten zum Vervollständigen.
+- **Set-Fortschritt:** Pro Set „47/189“ mit Fortschrittsbalken, deutsche Set- und Kartennamen mit deutschen Kartenbildern (englischer Fallback), Sets sortierbar nach Fortschritt, Wert, fehlenden Karten, Name oder Erscheinungsjahr. In der Set-Ansicht Karten nach Preis oder Nummer sortieren und nach Preisspanne filtern, mit Summe der Auswahl und Kosten zum Vervollständigen.
 - **Verlauf** aller abgeschlossenen Sessions.
 - **Konto mit Login:** E-Mail und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
 - **Automatische Abmeldung** nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.

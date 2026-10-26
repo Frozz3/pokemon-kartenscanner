@@ -40,6 +40,8 @@
       get sort() { return read("sort", "value"); }, set sort(v) { write("sort", v); },
       get sound() { return read("sound", "1") === "1"; }, set sound(v) { write("sound", v ? "1" : "0"); },
       get auto() { return read("auto", "1") === "1"; }, set auto(v) { write("auto", v ? "1" : "0"); },
+      get setSort() { return read("setsort", "progress"); }, set setSort(v) { write("setsort", v); },
+      get cardSort() { return read("cardsort", "num"); }, set cardSort(v) { write("cardsort", v); },
       get idle() { const n = Number(read("idle", "15")); return isFinite(n) ? n : 15; }, set idle(v) { write("idle", String(v)); },
     };
   })();
@@ -736,16 +738,29 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   // ---------- sets ----------
   const SET_TTL = 7 * 864e5;
   const setIdOf = c => c && c.market ? (c.market.setId || (c.market.tcgdexId ? String(c.market.tcgdexId).replace(/-[^-]+$/, "") : null)) : null;
+  // Set data in German where TCGdex has it (names, card images); the English data fills gaps and gives the complete card list.
   async function getSet(setId) {
     const cached = state.setInfo.get(setId); if (cached && cached !== "error") return cached;
-    try { const raw = localStorage.getItem("ks-set-" + setId); if (raw) { const o = JSON.parse(raw); if (Date.now() - o.t < SET_TTL) { state.setInfo.set(setId, o.v); return o.v; } } } catch (_) {}
-    const v = await tcgFetch(TCG + "en/sets/" + encodeURIComponent(setId));
-    if (!v || !Array.isArray(v.cards)) throw new Error("set");
-    const slim = { id: v.id, name: v.name, logo: v.logo || null, symbol: v.symbol || null, releaseDate: v.releaseDate || null, serie: (v.serie && v.serie.name) || null,
-      official: (v.cardCount && num(v.cardCount.official)) || null, total: (v.cardCount && num(v.cardCount.total)) || v.cards.length,
-      cards: v.cards.map(c => ({ id: c.id, localId: String(c.localId), name: c.name, image: typeof c.image === "string" ? c.image : null })) };
+    const key = "ks-set2-" + setId;
+    try { const raw = localStorage.getItem(key); if (raw) { const o = JSON.parse(raw); if (Date.now() - o.t < SET_TTL) { state.setInfo.set(setId, o.v); return o.v; } } } catch (_) {}
+    const url = lang => TCG + lang + "/sets/" + encodeURIComponent(setId);
+    const [en, de] = await Promise.all([tcgFetch(url("en")), tcgFetch(url("de")).catch(() => null)]);
+    const base = (en && Array.isArray(en.cards)) ? en : (de && Array.isArray(de.cards) ? de : null);
+    if (!base) throw new Error("set");
+    const deCards = new Map(((de && de.cards) || []).map(c => [c.id, c]));
+    const enCards = new Map(((en && en.cards) || []).map(c => [c.id, c]));
+    const ids = [...new Set([...enCards.keys(), ...deCards.keys()])];
+    const img = c => c && typeof c.image === "string" ? c.image : null;
+    const cards = ids.map(id => {
+      const e = enCards.get(id), d = deCards.get(id), any = e || d;
+      return { id, localId: String(any.localId), name: (d && d.name) || e.name, nameEn: (e && e.name) || null, image: img(d) || img(e) };
+    }).sort((a, b) => (isNum(a.localId) && isNum(b.localId)) ? Number(a.localId) - Number(b.localId) : a.localId.localeCompare(b.localId, "de", { numeric: true }));
+    const pick = k => (de && de[k]) || (en && en[k]) || null;
+    const slim = { id: base.id, name: pick("name"), nameEn: (en && en.name) || null, german: !!(de && de.name), logo: pick("logo"), symbol: pick("symbol"),
+      releaseDate: pick("releaseDate"), serie: (de && de.serie && de.serie.name) || (en && en.serie && en.serie.name) || null,
+      official: (base.cardCount && num(base.cardCount.official)) || null, total: (base.cardCount && num(base.cardCount.total)) || cards.length, cards };
     state.setInfo.set(setId, slim);
-    try { localStorage.setItem("ks-set-" + setId, JSON.stringify({ t: Date.now(), v: slim })); } catch (_) {}
+    try { localStorage.setItem(key, JSON.stringify({ t: Date.now(), v: slim })); } catch (_) {}
     return slim;
   }
   const setLoading = new Set();
@@ -758,7 +773,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         try { await getSet(id); } catch (_) { state.setInfo.set(id, "error"); }
         setLoading.delete(id);
         if (state.tab === "sets") renderSets();
-        if (state.sheet && state.sheet.type === "set" && state.sheet.id === id) renderSheet();
+        if (state.tab === "inv") renderInv();
+        if (state.sheet && (state.sheet.type === "set" && state.sheet.id === id || state.sheet.type === "detail")) renderSheet();
       }
     })();
   }
@@ -778,6 +794,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     for (const sc of info.cards) if (owned.has(sc.id)) { if (isNum(sc.localId) && Number(sc.localId) <= official) main++; else secret++; }
     return { official, main, secret, pct: official ? main / official : 0 };
   }
+  function setCardPrice(sc, owned) { const o = owned.get(sc.id); if (o) return num(o.cards[0].priceEur); return state.setPrices.has(sc.id) ? num(state.setPrices.get(sc.id)) : null; }
   async function loadMissingPrices(setId) {
     const info = state.setInfo.get(setId); if (!info || info === "error" || state.setPricesBusy) return;
     const owned = ownedInSet(setId);
@@ -994,7 +1011,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg>',
     find: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
   };
-  const subLine = c => [c.set, c.number].filter(Boolean).map((v, i, a) => (i === a.length - 1 && c.number) ? `<span class="mono">${esc(v)}</span>` : esc(v)).join(" · ") || "Set unbekannt";
+  const setNameOf = c => { const si = state.setInfo.get(setIdOf(c)); return si && si !== "error" ? si.name : c.set; };
+  const subLine = c => [setNameOf(c), c.number].filter(Boolean).map((v, i, a) => (i === a.length - 1 && c.number) ? `<span class="mono">${esc(v)}</span>` : esc(v)).join(" · ") || "Set unbekannt";
   const srcLabel = c => c.priceSource === "hand" ? "eigener Preis" : c.priceSource === "markt" ? "Cardmarket-Trend" : (num(c.priceEur) !== null ? "KI-Schätzung" : "kein Preis");
   const priceChip = c => c.priceSource === "hand" ? '<span class="chip hand">eigener Preis</span>' : c.priceSource === "markt" ? '<span class="chip mk">Cardmarket</span>' : (num(c.priceEur) !== null ? '<span class="chip ai">KI-Schätzung</span>' : "");
   const imgTag = (src, alt) => src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy">` : "";
@@ -1175,6 +1193,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   function renderInv() {
     const cards = state.cards;
+    ensureSets([...new Set(cards.map(setIdOf).filter(Boolean))]);
     const totalQty = cards.reduce((s, c) => s + (c.qty || 1), 0);
     const total = cards.reduce((s, c) => s + (num(c.priceEur) || 0) * (c.qty || 1), 0);
     $("#invStats").innerHTML = `
@@ -1208,6 +1227,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       </button>`).join("")}</div>`;
   }
 
+  const SET_SORTS = [["progress", "Fortschritt"], ["value", "Dein Wert"], ["missing", "Wenigste fehlend"], ["name", "Name"], ["new", "Neueste zuerst"], ["old", "Älteste zuerst"]];
   function renderSets() {
     const v = $("#view-sets");
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
@@ -1215,24 +1235,38 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const unassigned = state.cards.filter(c => !setIdOf(c)).length;
     if (!ids.length) { v.innerHTML = `<div class="empty">Noch keine Sets. Sobald Karten mit Marktpreis im Inventar sind, siehst du hier, wie viele Karten dir pro Set fehlen.</div>`; return; }
     ensureSets(ids);
+    const sort = settings.setSort;
     const rows = ids.map(id => {
       const info = state.setInfo.get(id), owned = ownedInSet(id);
       const value = [...owned.values()].reduce((t, e) => t + e.value, 0);
       if (!info || info === "error") {
         const anyCard = state.cards.find(c => setIdOf(c) === id);
-        return { id, sort: -1, html: `<button class="setrow" type="button" data-act="open-set" data-id="${esc(id)}"><div class="setlogo"></div><div style="min-width:0"><div class="nm">${esc((anyCard && anyCard.market && anyCard.market.matchSet) || id)}</div><div class="sub">${info === "error" ? "Set-Daten nicht ladbar" : "Wird geladen …"} · ${owned.size} Karte${owned.size === 1 ? "" : "n"}</div></div><div class="px">${money(value)}</div></button>` };
+        const name = (anyCard && anyCard.market && anyCard.market.matchSet) || id;
+        return { id, name, pct: -1, value, missing: 1e9, date: "", html: `<button class="setrow" type="button" data-act="open-set" data-id="${esc(id)}"><div class="setlogo"></div><div style="min-width:0"><div class="nm">${esc(name)}</div><div class="sub">${info === "error" ? "Set-Daten nicht ladbar" : "Wird geladen …"} · ${owned.size} Karte${owned.size === 1 ? "" : "n"}</div></div><div class="px">${money(value)}</div></button>` };
       }
       const p = setProgress(info, owned);
-      return { id, sort: p.pct, html: `<button class="setrow" type="button" data-act="open-set" data-id="${esc(id)}">
+      return { id, name: info.name, pct: p.pct, value, missing: p.official - p.main, date: info.releaseDate || "", html: `<button class="setrow" type="button" data-act="open-set" data-id="${esc(id)}">
         <div class="setlogo">${info.logo ? `<img src="${esc(info.logo)}.png" alt="" loading="lazy">` : ""}</div>
         <div style="min-width:0"><div class="nm">${esc(info.name)}</div>
-          <div class="sub"><span class="mono">${p.main}/${p.official}</span>${p.secret ? ` + ${p.secret} Secret` : ""} · ${Math.floor(p.pct * 100)} %</div>
+          <div class="sub"><span class="mono">${p.main}/${p.official}</span>${p.secret ? ` + ${p.secret} Secret` : ""} · ${Math.floor(p.pct * 100)} %${info.releaseDate ? ` · ${esc(info.releaseDate.slice(0, 4))}` : ""}</div>
           <div class="prog"><i style="width:${(p.pct * 100).toFixed(1)}%"></i></div></div>
         <div class="px">${money(value)}<small>dein Wert</small></div></button>` };
-    }).sort((a, b) => b.sort - a.sort);
-    v.innerHTML = `<div class="notice">${ids.length} Set${ids.length === 1 ? "" : "s"} in deiner Sammlung. Tippe auf ein Set, um fehlende Karten zu sehen.</div>
+    });
+    const by = {
+      progress: (a, b) => b.pct - a.pct || b.value - a.value,
+      value: (a, b) => b.value - a.value,
+      missing: (a, b) => a.missing - b.missing,
+      name: (a, b) => a.name.localeCompare(b.name, "de"),
+      new: (a, b) => (b.date || "").localeCompare(a.date || ""),
+      old: (a, b) => (a.date || "9999").localeCompare(b.date || "9999"),
+    }[sort] || (() => 0);
+    rows.sort(by);
+    v.innerHTML = `<div class="toolbar"><div class="fine" style="align-self:center">${ids.length} Set${ids.length === 1 ? "" : "s"} in deiner Sammlung</div>
+        <select class="field" id="setSort" aria-label="Sets sortieren">${SET_SORTS.map(([k, l]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select></div>
       <div class="setlist">${rows.map(r => r.html).join("")}</div>
-      ${unassigned ? `<p class="fine">${unassigned} Karte${unassigned === 1 ? " ist" : "n sind"} noch keinem Set zugeordnet (ohne Marktpreis). Ordne sie in der Kartenansicht über „Andere Karte zuordnen“ zu.</p>` : ""}`;
+      ${unassigned ? `<p class="fine">${unassigned} Karte${unassigned === 1 ? " ist" : "n sind"} noch keinem Set zugeordnet (ohne Marktpreis). Ordne sie in der Kartenansicht über „Andere Karte zuordnen“ zu.</p>` : ""}
+      <p class="fine">Set- und Kartennamen auf Deutsch, soweit TCGdex sie kennt; sonst Englisch.</p>`;
+    $("#setSort").onchange = e => { settings.setSort = e.target.value; renderSets(); };
   }
 
   function renderValue() {
@@ -1292,7 +1326,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   // ---------- sheets ----------
   function openSheet(s) { state.sheet = s; renderSheet(); }
-  function closeSheet() { state.sheet = null; $("#sheetRoot").innerHTML = ""; document.body.style.overflow = ""; }
+  function closeSheet() { state.sheet = null; const r = $("#sheetRoot"); r.innerHTML = ""; r.dataset.key = ""; document.body.style.overflow = ""; }
 
   function marketBox(c, s) {
     const m = c.market;
@@ -1314,6 +1348,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     return `<div class="pricebox">${inner}<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" type="button" data-act="refresh-card" data-id="${esc(c.id)}" ${s.refreshing ? "disabled" : ""}>${s.refreshing ? "Rufe Preis ab …" : "Marktpreis aktualisieren"}</button><button class="btn small" type="button" data-act="search-card" data-id="${esc(c.id)}">Andere Karte zuordnen</button></div></div>`;
   }
 
+  let rangeTimer;
   function renderSheet() {
     const s = state.sheet, root = $("#sheetRoot");
     if (!s) { root.innerHTML = ""; return; }
@@ -1352,7 +1387,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       const big = showOff ? off : own;
       const totalVal = num(c.priceEur) === null ? null : c.priceEur * (c.qty || 1);
       const facts = [
-        ["Set", [c.set, c.setCode ? `(${c.setCode})` : ""].filter(Boolean).join(" ")],
+        ["Set", [setNameOf(c), c.setCode ? `(${c.setCode})` : ""].filter(Boolean).join(" ")],
         ["Nummer", c.number ? `<span class="mono">${esc(c.number)}</span>` : null, true],
         ["Seltenheit", c.rarity], ["Variante", c.variant], ["Sprache", c.language ? langLabel(c.language) : null],
         ["Zustand", c.condition ? `${c.condition} · ${condLabel(c.condition)}` : null],
@@ -1438,22 +1473,38 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         title = info.name;
         const owned = ownedInSet(s.id), p = setProgress(info, owned);
         const value = [...owned.values()].reduce((t, e) => t + e.value, 0);
-        const f = s.filter || "missing";
-        const list = info.cards.filter(c => f === "all" || (f === "missing" ? !owned.has(c.id) : owned.has(c.id)));
+        const f = s.filter || "missing", sort = settings.cardSort;
+        const lo = s.min != null ? s.min : null, hi = s.max != null ? s.max : null;
+        const priceMode = sort === "pdesc" || sort === "pasc" || lo !== null || hi !== null;
         const missing = info.cards.filter(c => !owned.has(c.id));
         const known = missing.filter(c => state.setPrices.has(c.id));
         const missSum = known.reduce((t, c) => t + (state.setPrices.get(c.id) || 0), 0);
         const busy = state.setPricesBusy && state.setPricesBusy.setId === s.id ? state.setPricesBusy : null;
+        // Sorting or filtering by price needs the prices of the missing cards: load them once, automatically.
+        if (priceMode && known.length < missing.length && !state.setPricesBusy && !s.autoLoaded) { s.autoLoaded = true; setTimeout(() => loadMissingPrices(s.id), 0); }
+        let list = info.cards.filter(c => f === "all" || (f === "missing" ? !owned.has(c.id) : owned.has(c.id)));
+        if (lo !== null || hi !== null) list = list.filter(c => { const pr = setCardPrice(c, owned); return pr !== null && (lo === null || pr >= lo) && (hi === null || pr <= hi); });
+        const pv = c => setCardPrice(c, owned);
+        const cmpNum = (a, b) => (isNum(a.localId) && isNum(b.localId)) ? Number(a.localId) - Number(b.localId) : a.localId.localeCompare(b.localId, "de", { numeric: true });
+        list = list.slice().sort({
+          num: cmpNum,
+          pdesc: (a, b) => (pv(b) ?? -1) - (pv(a) ?? -1) || cmpNum(a, b),
+          pasc: (a, b) => (pv(a) ?? 1e9) - (pv(b) ?? 1e9) || cmpNum(a, b),
+          name: (a, b) => a.name.localeCompare(b.name, "de"),
+        }[sort] || cmpNum);
+        const listSum = list.reduce((t, c) => t + (pv(c) || 0), 0), listPriced = list.filter(c => pv(c) !== null).length;
         const tile = c => {
-          const o = owned.get(c.id), price = o ? (o.cards[0].priceEur) : state.setPrices.get(c.id);
-          const img = c.image ? `<img src="${esc(c.image)}/low.webp" alt="" loading="lazy">` : `<span class="noimg">${esc(c.localId)}</span>`;
-          const inner = `<div class="sart">${img}${o && o.qty > 1 ? `<span class="qty">×${o.qty}</span>` : ""}</div><div class="sinfo"><span class="mono">${esc(c.localId)}</span> ${esc(c.name)}${price != null ? `<b>${esc(money(price))}</b>` : ""}</div>`;
+          const o = owned.get(c.id), price = pv(c);
+          const im = c.image ? `<img src="${esc(c.image)}/low.webp" alt="" loading="lazy">` : `<span class="noimg">${esc(c.localId)}</span>`;
+          const inner = `<div class="sart">${im}${o && o.qty > 1 ? `<span class="qty">×${o.qty}</span>` : ""}</div><div class="sinfo"><span class="mono">${esc(c.localId)}</span> ${esc(c.name)}${price != null ? `<b>${esc(money(price))}</b>` : ""}</div>`;
           return o ? `<button class="stile own" type="button" data-act="detail" data-id="${esc(o.cards[0].id)}">${inner}</button>`
-                   : `<a class="stile miss" href="https://www.cardmarket.com/de/Pokemon/Products/Search?searchString=${encodeURIComponent(c.name + " " + c.localId)}" target="_blank" rel="noopener">${inner}</a>`;
+                   : `<a class="stile miss" href="https://www.cardmarket.com/de/Pokemon/Products/Search?searchString=${encodeURIComponent((c.nameEn || c.name) + " " + c.localId)}" target="_blank" rel="noopener">${inner}</a>`;
         };
+        const fmtIn = v => v === null ? "" : String(v).replace(".", ",");
+        const presets = [[null, 1, "bis 1 €"], [1, 5, "1–5 €"], [5, 20, "5–20 €"], [20, null, "ab 20 €"]];
         body = `<div class="stack">
           <div class="pricebox">
-            <div class="eyebrow">${esc([info.serie, info.releaseDate ? info.releaseDate.slice(0, 4) : null].filter(Boolean).join(" · ") || "Set")}</div>
+            <div class="eyebrow">${esc([info.serie, info.releaseDate ? info.releaseDate.slice(0, 4) : null].filter(Boolean).join(" · ") || "Set")}${info.nameEn && info.nameEn !== info.name ? ` · ${esc(info.nameEn)}` : ""}</div>
             <div class="big">${p.main} / ${p.official}</div>
             <div class="prog big"><i style="width:${(p.pct * 100).toFixed(1)}%"></i></div>
             <div class="fine">${Math.floor(p.pct * 100)} % vollständig${p.secret ? ` · dazu ${p.secret} Secret Rare${p.secret === 1 ? "" : "s"}` : ""} · dein Wert ${money(value)}</div>
@@ -1461,13 +1512,20 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <div class="pricebox">
             <div class="eyebrow">Fehlende Karten: ${missing.length}</div>
             ${known.length ? `<div class="fine">Geschätzt zum Vervollständigen: <strong>${money(missSum)}</strong> (Cardmarket-Trend, ${known.length} von ${missing.length} Preisen geladen)</div>` : `<div class="fine">Lade die Preise, um zu sehen, was das Vervollständigen kosten würde.</div>`}
-            ${known.length < missing.length ? `<div><button class="btn small" type="button" data-act="set-prices" data-id="${esc(s.id)}" ${busy || state.setPricesBusy ? "disabled" : ""}>${busy ? `Lade Preise ${busy.done}/${busy.total} …` : `Preise der fehlenden Karten laden (${missing.length - known.length})`}</button></div>` : ""}
+            ${known.length < missing.length ? `<div><button class="btn small" type="button" data-act="set-prices" data-id="${esc(s.id)}" ${state.setPricesBusy ? "disabled" : ""}>${busy ? `Lade Preise ${busy.done}/${busy.total} …` : `Preise der fehlenden Karten laden (${missing.length - known.length})`}</button></div>` : ""}
           </div>
-          <div class="seg" role="group" aria-label="Filter">
+          <div class="seg" role="group" aria-label="Anzeigen">
             ${[["missing", `Fehlend (${missing.length})`], ["owned", `Vorhanden (${owned.size})`], ["all", `Alle (${info.cards.length})`]].map(([k, l]) => `<button type="button" data-act="set-filter" data-f="${k}" aria-pressed="${f === k}">${l}</button>`).join("")}
           </div>
-          ${list.length ? `<div class="sgrid">${list.map(tile).join("")}</div>` : `<div class="empty">${f === "missing" ? "Du hast alle Karten dieses Sets. Glückwunsch!" : "Keine Karten."}</div>`}
-          <p class="fine" style="margin:0">Fehlende Karten öffnen die Cardmarket-Suche. Gezählt werden Karten mit Marktpreis-Zuordnung, unabhängig von Sprache und Variante.</p>
+          <div class="filters">
+            <label class="flbl">Sortieren<select class="field" id="cardSort">${[["num", "Nummer"], ["pdesc", "Preis: teuerste zuerst"], ["pasc", "Preis: günstigste zuerst"], ["name", "Name"]].map(([k, l]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+            <div class="flbl">Preis von – bis (€)
+              <div class="range"><input class="field mono" id="pmin" inputmode="decimal" placeholder="von" value="${esc(fmtIn(lo))}" autocomplete="off"><span>–</span><input class="field mono" id="pmax" inputmode="decimal" placeholder="bis" value="${esc(fmtIn(hi))}" autocomplete="off"></div></div>
+            <div class="presets">${presets.map(([a, b, l]) => `<button type="button" class="chipbtn" data-act="set-range" data-min="${a ?? ""}" data-max="${b ?? ""}" aria-pressed="${a === lo && b === hi}">${l}</button>`).join("")}${lo !== null || hi !== null ? `<button type="button" class="chipbtn" data-act="set-range" data-min="" data-max="">Alle Preise</button>` : ""}</div>
+          </div>
+          <div class="fine">${list.length} Karte${list.length === 1 ? "" : "n"}${listPriced ? ` · zusammen ${money(listSum)}${listPriced < list.length ? ` (${listPriced} mit Preis)` : ""}` : ""}${busy ? " · Preise werden geladen …" : ""}</div>
+          ${list.length ? `<div class="sgrid">${list.map(tile).join("")}</div>` : `<div class="empty">${lo !== null || hi !== null ? (busy ? "Preise werden geladen …" : "Keine Karte in dieser Preisspanne.") : f === "missing" ? "Du hast alle Karten dieses Sets. Glückwunsch!" : "Keine Karten."}</div>`}
+          <p class="fine" style="margin:0">Preise: Cardmarket-Trend (Normalversion). Fehlende Karten öffnen die Cardmarket-Suche. Gezählt werden Karten mit Marktpreis-Zuordnung, unabhängig von Sprache und Variante.</p>
         </div>`;
       }
     } else if (s.type === "settings") {
@@ -1495,8 +1553,16 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <p class="fine" style="margin:0">Preisdaten: <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a> (Cardmarket, täglich aktualisiert). Pokémon und Pokémon-Kartennamen sind Marken von Nintendo, Creatures und GAME FREAK; diese App ist ein privates Fanprojekt.</p>
       </div>`;
     }
+    const prevSheet = root.querySelector(".sheet"), sheetKey = s.type + ":" + (s.id || "");
+    const keepScroll = prevSheet && root.dataset.key === sheetKey ? prevSheet.scrollTop : 0;
+    const focused = document.activeElement && root.contains(document.activeElement) && document.activeElement.id ? document.activeElement.id : null;
     root.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="sheet-head"><h2>${esc(title)}</h2><button class="x" type="button" data-act="close" aria-label="Schließen">×</button></div>${body}</div></div>`;
+    root.dataset.key = sheetKey;
+    if (keepScroll) root.querySelector(".sheet").scrollTop = keepScroll;
+    if (focused && (focused === "pmin" || focused === "pmax")) { const el = $("#" + focused); if (el) { el.focus(); const n = el.value.length; try { el.setSelectionRange(n, n); } catch (_) {} } }
+    const cs = $("#cardSort"); if (cs) cs.onchange = () => { settings.cardSort = cs.value; renderSheet(); };
+    for (const idr of ["pmin", "pmax"]) { const el = $("#" + idr); if (el) el.oninput = () => { clearTimeout(rangeTimer); rangeTimer = setTimeout(() => { if (!state.sheet) return; state.sheet[idr === "pmin" ? "min" : "max"] = parsePrice(el.value); renderSheet(); }, 450); }; }
     const ef = $("#editForm"); if (ef) ef.onsubmit = e => { e.preventDefault(); saveEdit(ef); };
     const sf = $("#searchForm"); if (sf) sf.onsubmit = e => { e.preventDefault(); runSearch(sf); };
     const si = $("#set-idle"); if (si) si.onchange = () => { settings.idle = Number(si.value); markActive(true); toast(settings.idle ? `Automatische Abmeldung nach ${idleLabel()} ohne Aktivität.` : "Automatische Abmeldung ist aus."); };
@@ -1636,8 +1702,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "migrate": migrateLegacy(); break;
       case "open-set": openSheet({ type: "set", id, filter: "missing" }); break;
       case "set-filter": state.sheet.filter = el.dataset.f; renderSheet(); break;
+      case "set-range": state.sheet.min = el.dataset.min === "" ? null : Number(el.dataset.min); state.sheet.max = el.dataset.max === "" ? null : Number(el.dataset.max); renderSheet(); break;
       case "set-prices": loadMissingPrices(id); break;
-      case "set-retry": state.setInfo.delete(id); try { localStorage.removeItem("ks-set-" + id); } catch (_) {} renderSheet(); break;
+      case "set-retry": state.setInfo.delete(id); try { localStorage.removeItem("ks-set2-" + id); localStorage.removeItem("ks-set-" + id); } catch (_) {} renderSheet(); break;
       case "import": $("#importIn").click(); break;
     }
   });
