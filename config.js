@@ -3,6 +3,6 @@
 // Browser zu stehen. Deine Daten schützt die Row Level Security aus supabase/schema.sql.
 // Niemals den "service_role"- oder "secret"-Schlüssel hier eintragen!
 window.KS_CONFIG = {
-  supabaseUrl: "",
-  supabaseKey: "",
+  supabaseUrl: "https://dmvknzvwmfebtkeqlssv.supabase.co",
+  supabaseKey: "sb_publishable_0xJsebKBqc8BFXAZzuWtGQ_6n1ZaOni",
 };
