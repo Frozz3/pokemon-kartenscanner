@@ -74,9 +74,17 @@
 
 <div id="camera" class="camera" hidden>
   <video id="camVideo" playsinline muted autoplay></video>
-  <div class="cam-frame" id="camFrame"><span></span></div>
-  <div class="cam-top"><span id="camCount">Karte in den Rahmen legen</span><button class="x" type="button" data-act="cam-close" aria-label="Kamera schließen">×</button></div>
-  <div class="cam-bottom"><button class="shutter" type="button" data-act="cam-shot" aria-label="Foto aufnehmen"></button></div>
+  <div class="cam-frame" id="camFrame"><span></span><div class="cam-price" id="camPrice"></div></div>
+  <div class="cam-top">
+    <span id="camCount">Karte in den Rahmen legen</span>
+    <div class="cam-tools">
+      <button class="cam-tog" type="button" data-act="cam-auto" id="camAutoBtn" aria-pressed="true">Auto</button>
+      <button class="cam-tog" type="button" data-act="cam-sound" id="camSoundBtn" aria-pressed="true">Ton</button>
+      <button class="x" type="button" data-act="cam-close" aria-label="Kamera schließen">×</button>
+    </div>
+  </div>
+  <div class="cam-feed" id="camFeed" aria-live="polite"></div>
+  <div class="cam-bottom"><div class="cam-sum" id="camSum"></div><button class="shutter" type="button" data-act="cam-shot" aria-label="Foto aufnehmen"></button></div>
   <div class="cam-flash" id="camFlash"></div>
 </div>
 

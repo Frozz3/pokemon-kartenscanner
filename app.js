@@ -38,6 +38,8 @@
       get apiKey() { return read("apikey", ""); }, set apiKey(v) { write("apikey", v); },
       get model() { return read("model", MODELS[0][0]); }, set model(v) { write("model", v); },
       get sort() { return read("sort", "value"); }, set sort(v) { write("sort", v); },
+      get sound() { return read("sound", "1") === "1"; }, set sound(v) { write("sound", v ? "1" : "0"); },
+      get auto() { return read("auto", "1") === "1"; }, set auto(v) { write("auto", v ? "1" : "0"); },
     };
   })();
 
@@ -336,13 +338,14 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     return s.id;
   }
 
-  async function addFromVersions(v) {
+  async function addFromVersions(v, opts = {}) {
     const sid = await ensureSession();
-    const id = uid();
+    const id = opts.id || uid();
     await DB.put("images", { id, data: v.main });
-    await save("items", { id, sessionId: sid, status: "pending", thumb: v.thumb, imageId: id, qty: 1, createdAt: Date.now() });
+    await save("items", { id, sessionId: sid, status: "pending", thumb: v.thumb, imageId: id, qty: 1, createdAt: Date.now(), auto: !!opts.auto });
     render();
     recognize(id, v.ai);
+    return id;
   }
   async function handleFiles(fileList) {
     for (const f of Array.from(fileList || []).filter(f => f && f.size)) {
@@ -355,12 +358,19 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   async function patchItem(id, patch) { const it = getItem(id); if (!it) return; await save("items", { ...it, ...patch }); }
 
   async function recognize(id, blob) {
-    if (!settings.apiKey) { await patchItem(id, { status: "error", error: aiMsg({ code: "no_key" }) }); render(); return; }
+    if (!settings.apiKey) { const p = { status: "error", error: aiMsg({ code: "no_key" }) }; await patchItem(id, p); camResult(id, p); render(); return; }
     state.running.add(id); setStage(id, "Karte wird erkannt …");
     let patch;
     try {
       const r = await identify(blob);
-      if (!r || typeof r !== "object" || r.isCard === false) patch = { status: "error", error: "Auf dem Foto wurde keine Pokémon-Karte erkannt. Nimm sie neu auf oder such sie von Hand." };
+      if (!r || typeof r !== "object" || r.isCard === false) {
+        const it = getItem(id);
+        if (it && it.auto) { // automatic shot without a card: drop it quietly
+          state.running.delete(id); state.stage.delete(id);
+          await removeItem(id); camResult(id, { status: "nocard" }); return;
+        }
+        patch = { status: "error", error: "Auf dem Foto wurde keine Pokémon-Karte erkannt. Nimm sie neu auf oder such sie von Hand." };
+      }
       else {
         let card = normalizeCard(r);
         setStage(id, `${card.name}: Marktpreis wird gesucht …`);
@@ -370,6 +380,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     } catch (e) { patch = { status: "error", error: aiMsg(e) }; }
     await patchItem(id, patch);
     state.running.delete(id); setStage(id, null);
+    camResult(id, patch);
   }
   async function relookupItem(id, useId) {
     const it = getItem(id); if (!it || !it.card) return;
@@ -581,37 +592,176 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     } catch (e) { toast("Die Datei ist kein gültiges Kartenscanner-Backup."); }
   }
 
+  // ---------- sound ----------
+  let actx = null;
+  function audioUnlock() {
+    try {
+      if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return; actx = new C(); }
+      if (actx.state === "suspended") actx.resume();
+    } catch (_) {}
+  }
+  // "Ka-ching": short drawer clack (filtered noise) followed by two or three bell tones.
+  function cashSound(big) {
+    if (!settings.sound || !actx) return;
+    try {
+      const t = actx.currentTime + 0.01;
+      const out = actx.createGain(); out.gain.value = 0.55; out.connect(actx.destination);
+      const len = Math.floor(actx.sampleRate * 0.08), buf = actx.createBuffer(1, len, actx.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+      const n = actx.createBufferSource(); n.buffer = buf;
+      const bp = actx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2600; bp.Q.value = 0.8;
+      const ng = actx.createGain(); ng.gain.value = 0.7;
+      n.connect(bp); bp.connect(ng); ng.connect(out); n.start(t);
+      const bell = (start, f) => {
+        for (const [m, a] of [[1, 0.5], [2.76, 0.16], [5.4, 0.07]]) {
+          const o = actx.createOscillator(); o.type = "sine"; o.frequency.value = f * m;
+          const g = actx.createGain();
+          g.gain.setValueAtTime(0.0001, start);
+          g.gain.exponentialRampToValueAtTime(a, start + 0.005);
+          g.gain.exponentialRampToValueAtTime(0.0001, start + 0.7);
+          o.connect(g); g.connect(out); o.start(start); o.stop(start + 0.75);
+        }
+      };
+      bell(t + 0.06, 1568); bell(t + 0.17, 2093);
+      if (big) bell(t + 0.3, 2637);
+    } catch (_) {}
+  }
+
   // ---------- camera ----------
-  let stream = null, camShots = 0;
+  // Auto capture: a small grayscale copy of the frame area is analysed ~8x per second.
+  // A shot is taken when the picture is detailed enough (a card, not an empty table),
+  // has been still for a moment, and differs from the last captured card.
+  const AUTO = { W: 36, H: 50, STABLE: 5, CHANGE: 14, MIN_DETAIL: 5, HOLD: 650, COOLDOWN: 1500, TICK: 120 };
+  const BIG_PRICE = 20;
+  let stream = null, camShots = 0, camTimer = null, prevG = null, lastG = null, stableSince = 0, lastShot = 0, frameState = "";
+  const anaCanvas = document.createElement("canvas"); anaCanvas.width = AUTO.W; anaCanvas.height = AUTO.H;
+  const anaCtx = anaCanvas.getContext("2d", { willReadFrequently: true });
+  const camOpen = () => !!stream;
+
+  function frameCrop(v, pad) {
+    const box = v.getBoundingClientRect(), fr = $("#camFrame").getBoundingClientRect();
+    const scale = Math.max(box.width / v.videoWidth, box.height / v.videoHeight);
+    const ox = (box.width - v.videoWidth * scale) / 2, oy = (box.height - v.videoHeight * scale) / 2;
+    let x = (fr.left - box.left - ox) / scale, y = (fr.top - box.top - oy) / scale, w = fr.width / scale, h = fr.height / scale;
+    x -= w * pad; y -= h * pad; w *= 1 + 2 * pad; h *= 1 + 2 * pad;
+    x = Math.max(0, x); y = Math.max(0, y); w = Math.min(v.videoWidth - x, w); h = Math.min(v.videoHeight - y, h);
+    return { x, y, w, h };
+  }
+  function sampleGray(v) {
+    const c = frameCrop(v, 0);
+    anaCtx.drawImage(v, c.x, c.y, c.w, c.h, 0, 0, AUTO.W, AUTO.H);
+    const px = anaCtx.getImageData(0, 0, AUTO.W, AUTO.H).data;
+    const g = new Float32Array(AUTO.W * AUTO.H);
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = 0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2];
+    return g;
+  }
+  const meanDiff = (a, b) => { let t = 0; for (let i = 0; i < a.length; i++) t += Math.abs(a[i] - b[i]); return t / a.length; };
+  function detailOf(g) {
+    const W = AUTO.W, H = AUTO.H; let t = 0, n = 0;
+    for (let y = 0; y < H - 1; y++) for (let x = 0; x < W - 1; x++) { const i = y * W + x; t += Math.abs(g[i + 1] - g[i]) + Math.abs(g[i + W] - g[i]); n++; }
+    return t / n;
+  }
+  function setFrameState(st) {
+    if (st === frameState) return;
+    frameState = st;
+    const f = $("#camFrame"); f.classList.remove("hold", "same", "go"); if (st) f.classList.add(st);
+    const txt = !settings.auto ? "Auslöser tippen, um zu scannen"
+      : st === "hold" ? "Stillhalten …"
+      : st === "same" ? (camShots ? "Erfasst. Nächste Karte in den Rahmen" : "Karte in den Rahmen legen")
+      : "Karte in den Rahmen legen";
+    $("#camCount").textContent = txt;
+  }
+  function camTick() {
+    const v = $("#camVideo");
+    if (!stream || !v.videoWidth || document.hidden) return;
+    let g;
+    try { g = sampleGray(v); } catch (_) { return; }
+    const now = performance.now();
+    const moving = prevG ? meanDiff(g, prevG) : 99; prevG = g;
+    if (moving > AUTO.STABLE) stableSince = now;
+    if (!settings.auto) { setFrameState(""); return; }
+    const fresh = !lastG || meanDiff(g, lastG) > AUTO.CHANGE;
+    let st = "";
+    if (!fresh) st = "same";
+    else if (detailOf(g) >= AUTO.MIN_DETAIL) st = now - stableSince >= AUTO.HOLD ? "go" : "hold";
+    setFrameState(st);
+    if (st === "go" && now - lastShot > AUTO.COOLDOWN) { lastShot = now; lastG = g; shoot(true); }
+  }
+
   async function openCamera() {
+    audioUnlock();
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $("#camFallback").click(); return; }
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
     } catch (e) {
+      stream = null;
       toast("Kein Kamerazugriff. Ich öffne stattdessen die Foto-Aufnahme.");
       $("#camFallback").click(); return;
     }
     const v = $("#camVideo"); v.srcObject = stream;
-    $("#camera").hidden = false; camShots = 0; $("#camCount").textContent = "Karte in den Rahmen legen";
+    $("#camera").hidden = false;
+    camShots = 0; prevG = null; lastG = null; stableSince = performance.now(); lastShot = performance.now(); frameState = "x";
+    $("#camFeed").innerHTML = ""; $("#camPrice").classList.remove("on");
+    updateCamTools(); setFrameState(""); updateCamSum();
     try { await v.play(); } catch (_) {}
+    clearInterval(camTimer); camTimer = setInterval(camTick, AUTO.TICK);
   }
   function closeCamera() {
+    clearInterval(camTimer); camTimer = null;
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null; $("#camera").hidden = true; $("#camVideo").srcObject = null;
   }
-  async function shoot() {
+  function updateCamTools() {
+    $("#camAutoBtn").setAttribute("aria-pressed", String(settings.auto));
+    $("#camSoundBtn").setAttribute("aria-pressed", String(settings.sound));
+    $("#camSoundBtn").textContent = settings.sound ? "Ton an" : "Ton aus";
+  }
+  function updateCamSum() {
+    const items = openItems();
+    $("#camSum").textContent = items.length ? `Session: ${money(sessionTotal(items))}` : "";
+  }
+  async function shoot(auto) {
     const v = $("#camVideo"); if (!v.videoWidth) return;
-    const box = v.getBoundingClientRect(), fr = $("#camFrame").getBoundingClientRect();
-    const scale = Math.max(box.width / v.videoWidth, box.height / v.videoHeight);
-    const ox = (box.width - v.videoWidth * scale) / 2, oy = (box.height - v.videoHeight * scale) / 2;
-    const pad = 0.06;
-    let x = (fr.left - box.left - ox) / scale, y = (fr.top - box.top - oy) / scale, w = fr.width / scale, h = fr.height / scale;
-    x -= w * pad; y -= h * pad; w *= 1 + 2 * pad; h *= 1 + 2 * pad;
-    x = Math.max(0, x); y = Math.max(0, y); w = Math.min(v.videoWidth - x, w); h = Math.min(v.videoHeight - y, h);
+    if (!auto) { try { lastG = sampleGray(v); } catch (_) {} lastShot = performance.now(); }
     const flash = $("#camFlash"); flash.classList.add("on"); setTimeout(() => flash.classList.remove("on"), 60);
-    const vers = await makeVersions(v, v.videoWidth, v.videoHeight, { x, y, w, h });
-    camShots++; $("#camCount").textContent = `${camShots} Karte${camShots === 1 ? "" : "n"} erfasst – nächste Karte`;
-    addFromVersions(vers).catch(() => toast("Der Scan ließ sich nicht speichern."));
+    const id = uid();
+    camEntry(id);
+    camShots++;
+    try {
+      const vers = await makeVersions(v, v.videoWidth, v.videoHeight, frameCrop(v, 0.06));
+      await addFromVersions(vers, { id, auto: !!auto });
+    } catch (_) { camResult(id, { status: "error", error: "Der Scan ließ sich nicht speichern." }); }
+  }
+
+  // Live results in the camera view
+  const camEntries = new Map();
+  function camEntry(id) {
+    const feed = $("#camFeed");
+    const el = document.createElement("div");
+    el.className = "cam-item"; el.innerHTML = `<span class="n">Wird erkannt …</span><span class="p"></span>`;
+    feed.prepend(el); camEntries.set(id, el);
+    while (feed.children.length > 3) feed.lastElementChild.remove();
+  }
+  let priceTimer;
+  function camResult(id, patch) {
+    if (!camOpen()) return;
+    const el = camEntries.get(id); camEntries.delete(id);
+    updateCamSum();
+    if (patch.status === "ok" && patch.card) {
+      const c = patch.card, price = num(c.priceEur);
+      if (el) { el.querySelector(".n").textContent = c.name; el.querySelector(".p").textContent = price === null ? "kein Preis" : money(price); }
+      if (price !== null) {
+        const pill = $("#camPrice");
+        pill.textContent = money(price) + (c.priceSource === "markt" ? "" : " (KI)");
+        pill.classList.remove("on"); void pill.offsetWidth; pill.classList.add("on");
+        clearTimeout(priceTimer); priceTimer = setTimeout(() => pill.classList.remove("on"), 3500);
+        cashSound(price >= BIG_PRICE);
+      }
+    } else if (el) {
+      el.classList.add("err");
+      el.querySelector(".n").textContent = patch.status === "nocard" ? "Keine Karte erkannt" : (patch.error || "Nicht erkannt");
+    }
+    if (el) setTimeout(() => { el.classList.add("fade"); setTimeout(() => el.remove(), 450); }, 7000);
   }
 
   // ---------- rendering ----------
@@ -944,7 +1094,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "gallery": $("#galIn").click(); break;
       case "manual": addManual(); break;
       case "cam-close": closeCamera(); render(); break;
-      case "cam-shot": shoot(); break;
+      case "cam-shot": shoot(false); break;
+      case "cam-auto": settings.auto = !settings.auto; updateCamTools(); frameState = "x"; setFrameState(""); toast(settings.auto ? "Automatisch scannen ist an." : "Automatisch scannen ist aus. Tippe auf den Auslöser."); break;
+      case "cam-sound": settings.sound = !settings.sound; updateCamTools(); if (settings.sound) { audioUnlock(); cashSound(false); } break;
       case "retry": retryItem(id); break;
       case "remove": removeItem(id); break;
       case "edit-item": openSheet({ type: "edit", kind: "item", id }); break;

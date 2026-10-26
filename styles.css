@@ -225,4 +225,22 @@ form.edit .field { color: var(--ink); font-weight: 400; }
 .cam-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
 .cam-flash.on { opacity: .7; transition: none; }
 
-@media (prefers-reduced-motion: reduce) { .bar::after { animation: none; width: 100%; opacity: .5; } .cam-flash { transition: none; } }
+.cam-tools { display: flex; gap: 8px; align-items: center; }
+.cam-tog { white-space: nowrap; min-height: 36px; padding: 0 12px; border-radius: 99px; border: 1px solid rgba(255,255,255,.35); background: rgba(0,0,0,.5); color: #fff; font-weight: 600; font-size: 13px; cursor: pointer; }
+.cam-tog[aria-pressed="true"] { background: #FFCB05; color: #1C1600; border-color: #FFCB05; }
+.cam-frame { transition: border-color .2s; }
+.cam-frame.hold { border-color: #fff; }
+.cam-frame.same, .cam-frame.go { border-color: #4CC48E; }
+.cam-price { position: absolute; left: 50%; bottom: -22px; transform: translateX(-50%) scale(.6); opacity: 0; background: #FFCB05; color: #1C1600; font-family: var(--f-mono); font-weight: 600; font-size: 22px; padding: 6px 16px; border-radius: 99px; box-shadow: 0 4px 16px rgba(0,0,0,.5); white-space: nowrap; transition: transform .28s cubic-bezier(.3,1.6,.5,1), opacity .2s; pointer-events: none; }
+.cam-price.on { opacity: 1; transform: translateX(-50%) scale(1); }
+.cam-feed { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top, 0px) + 64px); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 16px; pointer-events: none; }
+.cam-item { display: flex; gap: 10px; align-items: center; max-width: min(92vw, 420px); background: rgba(0,0,0,.66); border-radius: 12px; padding: 6px 12px; font-size: 14px; transition: opacity .4s; }
+.cam-item .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cam-item .p { font-family: var(--f-mono); font-weight: 600; color: #FFCB05; white-space: nowrap; }
+.cam-item.err .n { color: #FF9A92; }
+.cam-item.fade { opacity: 0; }
+.cam-bottom { flex-direction: column; align-items: center; gap: 10px; }
+.cam-sum { font-family: var(--f-mono); font-weight: 600; background: rgba(0,0,0,.55); padding: 4px 12px; border-radius: 99px; font-size: 14px; }
+.cam-sum:empty { display: none; }
+
+@media (prefers-reduced-motion: reduce) { .bar::after { animation: none; width: 100%; opacity: .5; } .cam-flash, .cam-price { transition: none; } }
