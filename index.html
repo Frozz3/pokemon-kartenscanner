@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pokémon Kartenscanner</title>
+<meta name="description" content="Pokémon-Karten mit der Handykamera scannen, mit Cardmarket-Preisen bewerten und im Inventar sammeln.">
+<meta name="theme-color" content="#FFCB05">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Kartenscanner">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <svg class="ball" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14.5" fill="var(--surface)" stroke="var(--ink)" stroke-width="2.4"/><path d="M1.5 16a14.5 14.5 0 0 1 29 0z" fill="var(--accent)" stroke="var(--ink)" stroke-width="2.4"/><circle cx="16" cy="16" r="4.6" fill="var(--surface)" stroke="var(--ink)" stroke-width="2.4"/></svg>
+      <h1>Kartenscanner</h1>
+    </div>
+    <div class="top-right">
+      <div class="worth"><div class="lbl">Inventarwert</div><div class="val" id="worth">–</div></div>
+      <button class="x" type="button" data-act="settings" aria-label="Einstellungen">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="view-scan" class="stack"></main>
+
+  <main id="view-inv" class="stack" hidden>
+    <div class="stats" id="invStats"></div>
+    <div id="invPrices"></div>
+    <div class="toolbar">
+      <input class="field" id="invSearch" type="search" placeholder="Suche: Name, Set, Nummer" autocomplete="off">
+      <select class="field" id="invSort" aria-label="Sortierung">
+        <option value="value">Wert</option>
+        <option value="new">Neueste</option>
+        <option value="name">Name</option>
+        <option value="set">Set</option>
+      </select>
+    </div>
+    <div id="invGrid"></div>
+  </main>
+
+  <main id="view-hist" class="stack" hidden></main>
+</div>
+
+<nav class="nav" aria-label="Bereiche">
+  <div class="in">
+    <button type="button" data-tab="scan" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8.5" y="7" width="7" height="10" rx="1"/></svg>
+      <span>Scannen<span id="navDot"></span></span>
+    </button>
+    <button type="button" data-tab="inv">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7" height="9" rx="1"/><rect x="14" y="4" width="7" height="9" rx="1"/><path d="M3 17h18M3 21h18"/></svg>
+      <span>Inventar</span>
+    </button>
+    <button type="button" data-tab="hist">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>
+      <span>Verlauf</span>
+    </button>
+  </div>
+</nav>
+
+<div id="sheetRoot"></div>
+
+<div id="camera" class="camera" hidden>
+  <video id="camVideo" playsinline muted autoplay></video>
+  <div class="cam-frame" id="camFrame"><span></span></div>
+  <div class="cam-top"><span id="camCount">Karte in den Rahmen legen</span><button class="x" type="button" data-act="cam-close" aria-label="Kamera schließen">×</button></div>
+  <div class="cam-bottom"><button class="shutter" type="button" data-act="cam-shot" aria-label="Foto aufnehmen"></button></div>
+  <div class="cam-flash" id="camFlash"></div>
+</div>
+
+<input id="camFallback" type="file" accept="image/*" capture="environment" hidden>
+<input id="galIn" type="file" accept="image/*" multiple hidden>
+<input id="importIn" type="file" accept="application/json,.json" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>
