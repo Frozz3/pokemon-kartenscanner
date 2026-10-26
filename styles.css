@@ -158,6 +158,13 @@ a { color: var(--link); }
 .hist ul { list-style: none; margin: 0; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
 .hist li { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; border-top: 1px solid var(--line); padding-top: 6px; }
 
+/* Login */
+.auth { max-width: 440px; margin: 6vh auto 0; width: 100%; }
+.auth-logo { width: 64px; height: 64px; border-radius: 16px; }
+.auth-links { display: flex; flex-wrap: wrap; gap: 4px; justify-content: space-between; }
+.auth-links .btn { border-color: transparent; color: var(--link); padding: 0 6px; }
+.ok-box { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); color: var(--ink); }
+
 /* Bottom nav */
 .nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--surface); border-top: 1px solid var(--line);

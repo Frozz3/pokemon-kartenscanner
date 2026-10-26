@@ -43,52 +43,90 @@
     };
   })();
 
-  // ---------- IndexedDB ----------
-  const DB = (() => {
-    let opening;
-    const open = () => opening || (opening = new Promise((res, rej) => {
-      const r = indexedDB.open("kartenscanner", 1);
-      r.onupgradeneeded = () => { const d = r.result; for (const s of ["cards", "sessions", "items", "images"]) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: "id" }); };
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-    }));
-    const run = async (store, mode, fn) => {
-      const d = await open();
-      return new Promise((res, rej) => {
-        const t = d.transaction(store, mode); const req = fn(t.objectStore(store));
-        t.oncomplete = () => res(req ? req.result : undefined);
-        t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+  // ---------- Supabase (login, data, photos) ----------
+  // Each record is stored as one row {id, data} in its table; Row Level Security limits
+  // every row and every photo to the account that created it (see supabase/schema.sql).
+  const CFG = window.KS_CONFIG || {};
+  const BUCKET = "card-images";
+  const APP_URL = location.origin + location.pathname;
+  let sb = null;
+
+  const Store = {
+    async all(t) {
+      const out = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await sb.from(t).select("id,data").range(from, from + 999);
+        if (error) throw error;
+        out.push(...data.map(r => ({ ...r.data, id: r.id })));
+        if (data.length < 1000) break;
+      }
+      return out;
+    },
+    async put(t, obj) {
+      const { id, ...rest } = obj;
+      const { error } = await sb.from(t).upsert({ id, data: rest, updated_at: new Date().toISOString() });
+      if (error) throw error;
+    },
+    async del(t, id) { const { error } = await sb.from(t).delete().eq("id", id); if (error) throw error; },
+  };
+  const Img = {
+    path: id => `${state.user.id}/${id}.jpg`,
+    async put(id, dataURL) {
+      const { error } = await sb.storage.from(BUCKET).upload(Img.path(id), dataURLtoBlob(dataURL), { contentType: "image/jpeg", upsert: true });
+      if (error) throw error;
+    },
+    async blob(id) { const { data, error } = await sb.storage.from(BUCKET).download(Img.path(id)); if (error) throw error; return data; },
+    async url(id) {
+      if (state.imgCache.has(id)) return state.imgCache.get(id);
+      const u = URL.createObjectURL(await Img.blob(id)); state.imgCache.set(id, u); return u;
+    },
+    async del(id) { if (!id) return; state.imgCache.delete(id); try { await sb.storage.from(BUCKET).remove([Img.path(id)]); } catch (_) {} },
+  };
+
+  // Data from the first, device-only version (IndexedDB), offered once for import into the account.
+  const Legacy = {
+    read() {
+      return new Promise(res => {
+        if (!("indexedDB" in window)) return res(null);
+        let r;
+        try { r = indexedDB.open("kartenscanner", 1); } catch (_) { return res(null); }
+        r.onupgradeneeded = () => { try { r.transaction.abort(); } catch (_) {} };
+        r.onerror = () => res(null);
+        r.onsuccess = () => {
+          const d = r.result, stores = ["cards", "sessions", "items", "images"].filter(n => d.objectStoreNames.contains(n));
+          if (!stores.length) { d.close(); return res(null); }
+          const out = {}; let left = stores.length;
+          const t = d.transaction(stores, "readonly");
+          const done = () => { if (--left === 0) { d.close(); res(out); } };
+          for (const n of stores) { const q = t.objectStore(n).getAll(); q.onsuccess = () => { out[n] = q.result || []; done(); }; q.onerror = () => { out[n] = []; done(); }; }
+        };
       });
-    };
-    return {
-      all: s => run(s, "readonly", st => st.getAll()),
-      get: (s, id) => run(s, "readonly", st => st.get(id)),
-      put: (s, v) => run(s, "readwrite", st => { st.put(v); return null; }),
-      del: (s, id) => run(s, "readwrite", st => { st.delete(id); return null; }),
-    };
-  })();
+    },
+    clear() { try { indexedDB.deleteDatabase("kartenscanner"); } catch (_) {} },
+  };
 
   const state = {
     cards: [], sessions: [], items: [], open: null, loaded: false, problem: null,
     running: new Set(), stage: new Map(), tab: "scan", search: "", sort: settings.sort,
     sheet: null, imgCache: new Map(), busy: false, refreshing: null, test: null, marketDown: null,
+    user: null, authReady: false, recovery: false, authMode: "login", authBusy: false, authMsg: null, authErr: null, authEmail: "",
+    legacy: null, migrating: null, lastSync: 0,
   };
 
   async function save(store, obj) {
-    await DB.put(store, clone(obj));
+    try { await Store.put(store, clone(obj)); }
+    catch (e) { toast("Speichern fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
     const list = store === "cards" ? state.cards : store === "sessions" ? state.sessions : store === "items" ? state.items : null;
     if (list) { const i = list.findIndex(x => x.id === obj.id); if (i >= 0) list[i] = obj; else list.push(obj); }
     if (store === "sessions") state.open = state.sessions.find(s => s.status === "open") || null;
-    persistOnce();
   }
   async function remove(store, id) {
-    await DB.del(store, id);
+    try { await Store.del(store, id); }
+    catch (e) { toast("Löschen fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
     const list = store === "cards" ? state.cards : store === "sessions" ? state.sessions : store === "items" ? state.items : null;
     if (list) { const i = list.findIndex(x => x.id === id); if (i >= 0) list.splice(i, 1); }
     if (store === "sessions") state.open = state.sessions.find(s => s.status === "open") || null;
   }
-  let persistAsked = false;
-  function persistOnce() { if (persistAsked) return; persistAsked = true; try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (_) {} }
   const openItems = () => state.open ? state.items.filter(i => i.sessionId === state.open.id).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)) : [];
 
   // ---------- images ----------
@@ -111,7 +149,7 @@
     return toBlob(drawTo(src, sw, sh, 1500, crop), 0.85).then(ai => ({
       ai,
       main: drawTo(src, sw, sh, 1100, crop).toDataURL("image/jpeg", 0.8),
-      thumb: drawTo(src, sw, sh, 300, crop).toDataURL("image/jpeg", 0.7),
+      thumb: drawTo(src, sw, sh, 240, crop).toDataURL("image/jpeg", 0.66),
     }));
   }
   const blobToBase64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1]); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob); });
@@ -341,7 +379,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   async function addFromVersions(v, opts = {}) {
     const sid = await ensureSession();
     const id = opts.id || uid();
-    await DB.put("images", { id, data: v.main });
+    Img.put(id, v.main).catch(() => toast("Das Foto ließ sich nicht hochladen. Die Karte wird trotzdem erkannt."));
     await save("items", { id, sessionId: sid, status: "pending", thumb: v.thumb, imageId: id, qty: 1, createdAt: Date.now(), auto: !!opts.auto });
     render();
     recognize(id, v.ai);
@@ -391,14 +429,15 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   }
   async function retryItem(id) {
     const it = getItem(id); if (!it || !it.imageId) return;
-    const img = await DB.get("images", it.imageId);
-    if (!img) { toast("Das Foto ist nicht mehr vorhanden."); return; }
+    let blob = null;
+    try { blob = await Img.blob(it.imageId); } catch (_) {}
+    if (!blob) { toast("Das Foto ist nicht mehr vorhanden."); return; }
     await patchItem(id, { status: "pending", error: null });
-    recognize(id, dataURLtoBlob(img.data));
+    recognize(id, blob);
   }
   async function removeItem(id) {
     const it = getItem(id); if (!it) return;
-    await remove("items", id); if (it.imageId) await DB.del("images", it.imageId);
+    await remove("items", id); if (it.imageId) await Img.del(it.imageId);
     render();
   }
   async function addManual() {
@@ -425,7 +464,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           const upd = { ...ex, qty: (ex.qty || 1) + qty };
           if (ex.priceSource !== "hand" && num(it.card.priceEur) !== null) Object.assign(upd, { priceEur: it.card.priceEur, priceSource: it.card.priceSource, priceDate: it.card.priceDate, market: it.card.market || null, marketError: it.card.marketError || null });
           await save("cards", upd);
-          if (it.imageId && it.imageId !== ex.imageId) await DB.del("images", it.imageId);
+          if (it.imageId && it.imageId !== ex.imageId) await Img.del(it.imageId);
           merged++;
         } else {
           await save("cards", { id: it.id, ...it.card, qty, thumb: it.thumb || null, imageId: it.imageId || null, addedAt: Date.now(), sessionId: sess.id });
@@ -436,7 +475,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       const total = r2(sessionTotal(ok)) || 0;
       const count = ok.reduce((s, i) => s + (i.qty || 1), 0);
       await save("sessions", { ...sess, status: "done", finishedAt: Date.now(), total, count, summary });
-      for (const it of all) { await remove("items", it.id); if (it.status !== "ok" && it.imageId) await DB.del("images", it.imageId); }
+      for (const it of all) { await remove("items", it.id); if (it.status !== "ok" && it.imageId) await Img.del(it.imageId); }
       state.busy = false;
       openSheet({ type: "done", total, count, added, merged });
     } catch (e) {
@@ -448,7 +487,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   }
   async function discardSession() {
     if (!state.open) return;
-    for (const it of openItems()) { await remove("items", it.id); if (it.imageId) await DB.del("images", it.imageId); }
+    for (const it of openItems()) { await remove("items", it.id); if (it.imageId) await Img.del(it.imageId); }
     await remove("sessions", state.open.id);
     closeSheet(); render();
   }
@@ -566,13 +605,31 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   async function deleteCard(id) {
     const c = state.cards.find(x => x.id === id); if (!c) return;
-    await remove("cards", id); if (c.imageId) await DB.del("images", c.imageId);
+    await remove("cards", id); if (c.imageId) await Img.del(c.imageId);
     closeSheet(); render(); toast("Karte gelöscht.");
+  }
+
+  // ---------- import / migration ----------
+  async function importRecords(data, progress) {
+    const imgs = data.images || [];
+    let n = 0; const total = imgs.length + ["cards", "sessions", "items"].reduce((t, k) => t + (data[k] || []).length, 0);
+    const tick = () => { n++; if (progress) progress(n, total); };
+    for (const v of imgs) { if (v && v.id && v.data) { try { await Img.put(v.id, v.data); } catch (_) {} } tick(); }
+    for (const k of ["cards", "sessions", "items"]) for (const v of (data[k] || [])) { if (v && v.id) await Store.put(k, v); tick(); }
+  }
+  async function migrateLegacy() {
+    const data = state.legacy; if (!data || state.migrating) return;
+    state.migrating = { n: 0, total: 1 }; render();
+    try {
+      await importRecords(data, (n, total) => { state.migrating = { n, total }; render(); });
+      Legacy.clear(); state.legacy = null; state.migrating = null;
+      await loadAll(); render(); toast("Deine Karten sind jetzt in deinem Konto gespeichert.");
+    } catch (e) { state.migrating = null; render(); toast("Übernahme abgebrochen. Prüfe deine Verbindung und versuch es erneut."); }
   }
 
   // ---------- backup ----------
   async function exportData() {
-    const data = { app: "pokemon-kartenscanner", version: 1, exportedAt: new Date().toISOString(), cards: state.cards, sessions: state.sessions, items: state.items, images: await DB.all("images") };
+    const data = { app: "pokemon-kartenscanner", version: 2, exportedAt: new Date().toISOString(), cards: state.cards, sessions: state.sessions, items: state.items };
     const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
     const name = `kartenscanner-backup-${new Date().toISOString().slice(0, 10)}.json`;
     const file = new File([blob], name, { type: "application/json" });
@@ -586,7 +643,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     try {
       const data = JSON.parse(await file.text());
       if (!data || data.app !== "pokemon-kartenscanner") throw new Error("format");
-      for (const s of ["images", "cards", "sessions", "items"]) for (const v of (data[s] || [])) if (v && v.id) await DB.put(s, v);
+      await importRecords(data);
       await loadAll(); closeSheet(); render();
       toast(`Backup eingespielt: ${(data.cards || []).length} Karten.`);
     } catch (e) { toast("Die Datei ist kein gültiges Kartenscanner-Backup."); }
@@ -777,6 +834,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   const thumbOf = (thumb, card) => thumb || officialImg(card, "low");
 
   function render() {
+    const authed = !!state.user && !state.recovery;
+    $("#view-auth").hidden = authed; $("#nav").hidden = !authed; $("#topRight").hidden = !authed;
+    if (!authed) { ["#view-scan", "#view-inv", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
     document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("#navDot").innerHTML = state.open && state.tab !== "scan" ? '<span class="dot" title="Offene Session"></span>' : "";
     $("#view-scan").hidden = state.tab !== "scan";
@@ -788,12 +848,83 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.tab === "hist") renderHist();
   }
 
+  function authMsg(e) {
+    const code = (e && (e.code || e.error_code)) || "", msg = String((e && e.message) || "");
+    if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "E-Mail oder Passwort ist falsch.";
+    if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) return "Bitte bestätige zuerst deine E-Mail-Adresse über den Link in deinem Postfach.";
+    if (code === "user_already_exists" || /already registered/i.test(msg)) return "Für diese E-Mail gibt es schon ein Konto. Melde dich an.";
+    if (code === "weak_password" || /password should/i.test(msg)) return "Das Passwort ist zu schwach. Nimm mindestens 8 Zeichen.";
+    if (code === "same_password") return "Das neue Passwort muss sich vom alten unterscheiden.";
+    if (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429)) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
+    if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind für diese App deaktiviert.";
+    if (/fetch|network/i.test(msg)) return "Keine Verbindung zum Server. Prüfe dein Internet.";
+    return msg || "Das hat nicht geklappt. Versuch es erneut.";
+  }
+
+  function renderAuth() {
+    const v = $("#view-auth");
+    if (state.problem) { v.innerHTML = `<div class="notice"><strong>App noch nicht eingerichtet.</strong><br>${esc(state.problem)}</div>`; return; }
+    if (!sb || !state.authReady) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
+    const m = state.recovery ? "newpw" : state.authMode;
+    const T = {
+      login: ["Anmelden", "Melde dich an, um dein Inventar zu sehen.", "Anmelden"],
+      signup: ["Konto erstellen", "Deine Karten werden in deinem Konto gespeichert und sind auf jedem Gerät verfügbar.", "Konto erstellen"],
+      reset: ["Passwort vergessen", "Wir schicken dir einen Link, mit dem du ein neues Passwort setzt.", "Link senden"],
+      newpw: ["Neues Passwort", "Leg ein neues Passwort für dein Konto fest.", "Passwort speichern"],
+    }[m];
+    const email = m !== "newpw" ? `<label class="full">E-Mail<input class="field" id="a-email" name="email" type="email" autocomplete="email" autocapitalize="off" spellcheck="false" required value="${esc(state.authEmail)}"></label>` : "";
+    const pw = m !== "reset" ? `<label class="full">${m === "newpw" ? "Neues Passwort (mind. 8 Zeichen)" : m === "signup" ? "Passwort (mind. 8 Zeichen)" : "Passwort"}<input class="field" id="a-pw" name="pw" type="password" autocomplete="${m === "login" ? "current-password" : "new-password"}" required></label>` : "";
+    const links = {
+      login: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="signup">Noch kein Konto? Registrieren</button><button class="btn ghost small" type="button" data-act="auth-mode" data-mode="reset">Passwort vergessen?</button>`,
+      signup: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="login">Schon ein Konto? Anmelden</button>`,
+      reset: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="login">Zurück zur Anmeldung</button>`,
+      newpw: "",
+    }[m];
+    v.innerHTML = `<section class="start auth">
+        <img class="auth-logo" src="icons/icon.svg" alt="" width="64" height="64">
+        <h2>${T[0]}</h2><p>${T[1]}</p>
+        ${state.authMsg ? `<div class="notice ok-box">${esc(state.authMsg)}</div>` : ""}
+        ${state.authErr ? `<div class="banner">${esc(state.authErr)}</div>` : ""}
+        <form class="edit" id="authForm" novalidate>
+          ${email}${pw}
+          <button class="btn primary full" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Einen Moment …" : T[2]}</button>
+        </form>
+        <div class="auth-links">${links}</div>
+      </section>`;
+    $("#authForm").onsubmit = e => { e.preventDefault(); submitAuth(new FormData(e.target), m); };
+  }
+
+  async function submitAuth(f, m) {
+    const email = String(f.get("email") || "").trim(), pw = String(f.get("pw") || "");
+    if (m !== "newpw") state.authEmail = email;
+    const fail = msg => { state.authErr = msg; state.authMsg = null; render(); };
+    if (m !== "newpw" && !/^\S+@\S+\.\S+$/.test(email)) return fail("Gib eine gültige E-Mail-Adresse ein.");
+    if ((m === "signup" || m === "newpw") && pw.length < 8) return fail("Das Passwort braucht mindestens 8 Zeichen.");
+    if (m === "login" && !pw) return fail("Gib dein Passwort ein.");
+    state.authBusy = true; state.authErr = null; state.authMsg = null; render();
+    try {
+      if (m === "login") {
+        const { error } = await sb.auth.signInWithPassword({ email, password: pw }); if (error) throw error;
+      } else if (m === "signup") {
+        const { data, error } = await sb.auth.signUp({ email, password: pw, options: { emailRedirectTo: APP_URL } }); if (error) throw error;
+        if (!data.session) { state.authMode = "login"; state.authMsg = "Fast geschafft: Wir haben dir eine E-Mail geschickt. Bestätige deine Adresse über den Link und melde dich dann hier an."; }
+      } else if (m === "reset") {
+        const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: APP_URL }); if (error) throw error;
+        state.authMode = "login"; state.authMsg = "Wenn es ein Konto mit dieser E-Mail gibt, ist der Link unterwegs. Öffne ihn auf diesem Gerät.";
+      } else if (m === "newpw") {
+        const { error } = await sb.auth.updateUser({ password: pw }); if (error) throw error;
+        state.recovery = false; toast("Neues Passwort gespeichert.");
+      }
+    } catch (e) { state.authErr = authMsg(e); }
+    state.authBusy = false; render();
+  }
+
   function renderScan() {
     const v = $("#view-scan");
     if (state.problem) { v.innerHTML = `<div class="notice"><strong>Speicher nicht verfügbar.</strong><br>${esc(state.problem)}</div>`; return; }
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
     const keyBanner = !settings.apiKey ? `<div class="banner"><span>Für die Erkennung per Foto brauchst du einen Anthropic-API-Schlüssel. Ohne Schlüssel kannst du Karten über die Suche hinzufügen.</span><button class="btn small" type="button" data-act="settings">Schlüssel eintragen</button></div>` : "";
-    const down = state.marketDown ? `<div class="banner">${esc(state.marketDown)}</div>` : "";
+    const down = (state.marketDown ? `<div class="banner">${esc(state.marketDown)}</div>` : "") + legacyBanner();
     const scanButtons = `
       <div class="scanrow">
         <button class="btn primary" type="button" data-act="camera">${I.cam}<span>Karte scannen</span></button>
@@ -839,6 +970,14 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <button class="btn ghost danger" type="button" data-act="discard">Verwerfen</button>
       </div>
       ${errors && !pending ? `<p class="fine">Offene Scans werden beim Abschließen nicht übernommen.</p>` : ""}`;
+  }
+
+  function legacyBanner() {
+    const L = state.legacy; if (!L) return "";
+    const n = (L.cards || []).reduce((t, c) => t + (c.qty || 1), 0), sN = (L.sessions || []).filter(x => x.status === "done").length;
+    const mg = state.migrating;
+    return `<div class="notice stack" style="gap:8px;border-color:var(--accent)"><span><strong>Karten auf diesem Gerät gefunden:</strong> ${n} Karte${n === 1 ? "" : "n"} und ${sN} Session${sN === 1 ? "" : "s"} aus der Version ohne Konto. Übernimm sie in dein Konto, damit sie dauerhaft gespeichert sind.</span>
+      <button class="btn primary small" type="button" data-act="migrate" ${mg ? "disabled" : ""}>${mg ? `Übertrage ${mg.n}/${mg.total} …` : "In mein Konto übernehmen"}</button></div>`;
   }
 
   function rowHTML(it) {
@@ -983,9 +1122,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         </div>
       </div>`;
       if (c.imageId && !state.imgCache.has(c.imageId)) {
-        DB.get("images", c.imageId).then(d => {
-          if (!d) return; state.imgCache.set(c.imageId, d.data);
-          const el = $("#bigImg"); if (el && state.sheet && state.sheet.id === c.id && state.sheet.img !== "official") el.src = d.data;
+        Img.url(c.imageId).then(u => {
+          const el = $("#bigImg"); if (el && state.sheet && state.sheet.id === c.id && state.sheet.img !== "official") el.src = u;
         }).catch(() => {});
       }
     } else if (s.type === "edit") {
@@ -1041,18 +1179,20 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <form class="edit" id="settingsForm">
           <label class="full">Anthropic-API-Schlüssel<input class="field mono" id="set-key" name="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${key ? "gespeichert – zum Ändern neu eingeben" : "sk-ant-…"}"></label>
           <label class="full">Modell für die Erkennung<select class="field" id="set-model" name="model">${MODELS.map(([v, l]) => `<option value="${v}" ${v === settings.model ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-          <p class="fine full" style="margin:0">Der Schlüssel wird nur im Browser dieses Geräts gespeichert und direkt an api.anthropic.com geschickt. Jeder Scan verbraucht API-Guthaben. Einen Schlüssel erstellst du in der <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a>. Tipp: Leg dort ein Ausgabelimit fest.</p>
+          <p class="fine full" style="margin:0">Der Schlüssel wird nur im Browser dieses Geräts gespeichert, nicht in deinem Konto, und direkt an api.anthropic.com geschickt. Jeder Scan verbraucht API-Guthaben. Einen Schlüssel erstellst du in der <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a>. Tipp: Leg dort ein Ausgabelimit fest.</p>
           <button class="btn primary" type="submit">Speichern</button>
           <button class="btn danger" type="button" data-act="key-del" ${key ? "" : "disabled"}>Schlüssel löschen</button>
         </form>
-        <div class="notice stack" style="gap:8px"><strong>Backup</strong>
-          <span>Deine Daten liegen nur auf diesem Gerät. Sichere sie ab und zu, z. B. in iCloud Drive.</span>
+        <div class="notice stack" style="gap:8px"><strong>Konto</strong>
+          <span>Angemeldet als <strong>${esc(state.user && state.user.email)}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
+          <button class="btn" type="button" data-act="logout">Abmelden</button>
+        </div>
+        <div class="notice stack" style="gap:8px"><strong>Sicherungsdatei</strong>
+          <span>Zusätzlich kannst du Inventar und Verlauf als Datei sichern (ohne Fotos).</span>
           <div class="actions"><button class="btn" type="button" data-act="export">Backup speichern</button><button class="btn" type="button" data-act="import">Backup laden</button></div>
-          <span class="fine" id="storageInfo"></span>
         </div>
         <p class="fine" style="margin:0">Preisdaten: <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a> (Cardmarket, täglich aktualisiert). Pokémon und Pokémon-Kartennamen sind Marken von Nintendo, Creatures und GAME FREAK; diese App ist ein privates Fanprojekt.</p>
       </div>`;
-      if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(e => { const el = $("#storageInfo"); if (el && e.usage != null) el.textContent = `Belegter Speicher: ${(e.usage / 1048576).toFixed(1)} MB`; }).catch(() => {});
     }
     root.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="sheet-head"><h2>${esc(title)}</h2><button class="x" type="button" data-act="close" aria-label="Schließen">×</button></div>${body}</div></div>`;
@@ -1119,6 +1259,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "delete-yes": deleteCard(id); break;
       case "key-del": settings.apiKey = ""; toast("Schlüssel gelöscht."); renderSheet(); render(); break;
       case "export": exportData(); break;
+      case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
+      case "logout": closeSheet(); sb.auth.signOut().catch(() => {}); break;
+      case "migrate": migrateLegacy(); break;
       case "import": $("#importIn").click(); break;
     }
   });
@@ -1136,16 +1279,46 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   // ---------- boot ----------
   async function loadAll() {
-    const [cards, sessions, items] = await Promise.all([DB.all("cards"), DB.all("sessions"), DB.all("items")]);
+    const [cards, sessions, items] = await Promise.all([Store.all("cards"), Store.all("sessions"), Store.all("items")]);
     state.cards = cards; state.sessions = sessions; state.items = items;
-    state.open = sessions.filter(s => s.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
-    // Scans that were still running when the app was closed can't finish any more.
-    for (const it of items) if (it.status === "pending") await save("items", { ...it, status: it.card ? "ok" : "error", error: it.card ? null : "Die Erkennung wurde unterbrochen. Tippe auf „Erneut erkennen“." });
-    state.loaded = true;
+    state.open = sessions.filter(x => x.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
+    // Scans left half-done (app closed mid-recognition) can't finish any more.
+    for (const it of items) if (it.status === "pending" && !state.running.has(it.id) && Date.now() - (it.createdAt || 0) > 3 * 60e3)
+      await save("items", { ...it, status: it.card ? "ok" : "error", error: it.card ? null : "Die Erkennung wurde unterbrochen. Tippe auf „Erneut erkennen“." }).catch(() => {});
+    state.loaded = true; state.lastSync = Date.now();
   }
+  function clearData() {
+    state.cards = []; state.sessions = []; state.items = []; state.open = null; state.loaded = false;
+    state.imgCache.forEach(u => { try { URL.revokeObjectURL(u); } catch (_) {} }); state.imgCache.clear();
+  }
+  async function onAuth(event, session) {
+    state.authReady = true;
+    if (event === "PASSWORD_RECOVERY") { state.recovery = true; state.authErr = null; state.authMsg = null; }
+    const user = session ? session.user : null;
+    if (!user) { state.user = null; state.recovery = false; clearData(); render(); return; }
+    if (state.user && state.user.id === user.id) { state.user = user; render(); return; }
+    state.user = user; clearData(); state.authMsg = null; state.authErr = null; render();
+    try { await loadAll(); } catch (e) { toast("Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); }
+    const L = await Legacy.read();
+    state.legacy = L && ((L.cards || []).length || (L.sessions || []).length || (L.items || []).length) ? L : null;
+    render();
+  }
+
   render();
-  if (!("indexedDB" in window)) { state.problem = "Dein Browser unterstützt keinen lokalen Speicher."; render(); }
-  else loadAll().then(render).catch(() => { state.problem = "Der lokale Speicher ließ sich nicht öffnen. Im privaten Modus funktioniert die App nicht."; render(); });
+  if (!window.supabase || !CFG.supabaseUrl || !CFG.supabaseKey) {
+    state.problem = "Die Verbindung zur Datenbank fehlt. Trag die Supabase-Adresse und den Schlüssel in config.js ein (siehe README).";
+    render();
+  } else {
+    sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+    // Supabase advises against awaiting other Supabase calls inside this callback, hence the timeout.
+    sb.auth.onAuthStateChange((event, session) => { setTimeout(() => onAuth(event, session), 0); });
+    // Pick up changes made on another device when the app comes back to the foreground.
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden || !state.user || state.recovery || state.busy || state.running.size || state.sheet || camOpen()) return;
+      if (Date.now() - state.lastSync < 30e3) return;
+      loadAll().then(render).catch(() => {});
+    });
+  }
 
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

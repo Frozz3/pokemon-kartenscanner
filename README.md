@@ -12,7 +12,8 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Echte Marktpreise:** Cardmarket-Trendpreis, Ab-Preis und Durchschnitte über 1, 7 und 30 Tage aus [TCGdex](https://tcgdex.dev), dazu der TCGplayer-Preis in USD. Reverse Holos bekommen den Reverse-Holo-Preis.
 - **Inventar:** Kartenraster mit eigenem Foto und offiziellem Kartenbild, Suche, Sortierung, Detailansicht, Preise aktualisieren.
 - **Verlauf** aller abgeschlossenen Sessions.
-- **Backup:** Export und Import als JSON-Datei.
+- **Konto mit Login:** E-Mail und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
+- **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
 - Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
 
 ## Auf dem iPhone installieren
@@ -31,9 +32,20 @@ Auf Android: in Chrome öffnen → Menü → **App installieren**.
 
 Der Schlüssel wird **nur im Browser des Geräts** gespeichert (localStorage) und direkt an `api.anthropic.com` gesendet. Er steht nie im Code oder im Repository. Jeder Scan verbraucht etwas API-Guthaben; Haiku ist günstiger, Sonnet genauer.
 
-## Daten
+## Daten und Login (Supabase)
 
-Inventar, Sessions und Fotos liegen in IndexedDB im Browser des Geräts. Sie werden nicht synchronisiert. Wer die Website-Daten in Safari löscht, löscht auch das Inventar, daher regelmäßig ein Backup speichern (Einstellungen → Backup speichern).
+Inventar, Sessions und Fotos liegen in einem eigenen, kostenlosen [Supabase](https://supabase.com)-Projekt. Jeder sieht nur seine eigenen Daten (Row Level Security).
+
+Einrichtung:
+
+1. Auf supabase.com ein Konto anlegen → **New project**, Region **Central EU (Frankfurt)**.
+2. **SQL Editor** → Inhalt von [`supabase/schema.sql`](supabase/schema.sql) einfügen → **Run**.
+3. **Authentication → URL Configuration:** Site URL `https://frozz3.github.io/pokemon-kartenscanner/`, dieselbe Adresse auch unter Redirect URLs eintragen.
+4. **Project Settings → API:** Project URL und den `anon`/`publishable` Key in [`config.js`](config.js) eintragen. Den `service_role`/`secret` Key niemals verwenden.
+5. In der App registrieren und die Bestätigungs-E-Mail öffnen.
+6. Danach **Authentication → Sign In / Providers → „Allow new users to sign up“ ausschalten**, damit sich niemand Fremdes registriert.
+
+Hinweis: Supabase pausiert kostenlose Projekte nach etwa einer Woche ohne Nutzung. Ein Klick auf „Restore“ im Dashboard holt das Projekt mit allen Daten zurück.
 
 ## Technik
 
@@ -43,7 +55,10 @@ Reines HTML, CSS und JavaScript ohne Build-Schritt:
 |---|---|
 | `index.html` | Grundgerüst |
 | `styles.css` | Gestaltung, hell und dunkel |
-| `app.js` | Logik: Speicher, Kamera, Erkennung, Preise, Oberfläche |
+| `app.js` | Logik: Login, Speicher, Kamera, Erkennung, Preise, Oberfläche |
+| `config.js` | Supabase-Adresse und öffentlicher Schlüssel |
+| `supabase/schema.sql` | Tabellen, Zugriffsregeln und Bildspeicher |
+| `vendor/supabase.js` | Supabase-Client 2.117.3 (MIT-Lizenz) |
 | `sw.js` | Service Worker für Offline-Start |
 | `manifest.webmanifest`, `icons/` | PWA-Angaben und App-Icons |
 
