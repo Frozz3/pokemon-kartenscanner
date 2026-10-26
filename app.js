@@ -111,9 +111,11 @@
     sheet: null, imgCache: new Map(), busy: false, refreshing: null, test: null, marketDown: null,
     user: null, authReady: false, recovery: false, authMode: "login", authBusy: false, authMsg: null, authErr: null, authEmail: "",
     legacy: null, migrating: null, lastSync: 0,
+    history: [], historyOk: true, setInfo: new Map(), setPrices: new Map(), setPricesBusy: null,
   };
 
   async function save(store, obj) {
+    if (store === "cards") scheduleSnapshot();
     try { await Store.put(store, clone(obj)); }
     catch (e) { toast("Speichern fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
     const list = store === "cards" ? state.cards : store === "sessions" ? state.sessions : store === "items" ? state.items : null;
@@ -121,6 +123,7 @@
     if (store === "sessions") state.open = state.sessions.find(s => s.status === "open") || null;
   }
   async function remove(store, id) {
+    if (store === "cards") scheduleSnapshot();
     try { await Store.del(store, id); }
     catch (e) { toast("Löschen fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
     const list = store === "cards" ? state.cards : store === "sessions" ? state.sessions : store === "items" ? state.items : null;
@@ -304,6 +307,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       tcgdexId: detail.id, lang, matchName: detail.name || null, matchSet: (detail.set && detail.set.name) || null,
       matchLocal: detail.localId != null ? String(detail.localId) : null,
       matchOfficial: (detail.set && detail.set.cardCount && num(detail.set.cardCount.official)) || null, ambiguous: !!ambiguous,
+      setId: (detail.set && detail.set.id) || null,
       image: typeof detail.image === "string" ? detail.image : null,
     };
     const price = p.trend ?? p.avg7 ?? p.avg30 ?? p.avg ?? p.low ?? null;
@@ -568,7 +572,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.sheet && state.sheet.id === id) { state.sheet.refreshing = false; renderSheet(); }
     render();
   }
-  async function refreshAll() {
+  async function refreshAll(opts = {}) {
     if (state.refreshing || !state.cards.length) return;
     const cards = state.cards.slice();
     state.refreshing = { done: 0, total: cards.length, failed: 0 }; renderInv();
@@ -582,7 +586,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     }
     const { failed, total } = state.refreshing;
     state.refreshing = null; render();
-    toast(state.marketDown || (failed ? `Preise aktualisiert. ${failed} von ${total} ohne Marktpreis.` : "Alle Preise aktualisiert."));
+    if (!opts.silent || state.marketDown) toast(state.marketDown || (failed ? `Preise aktualisiert. ${failed} von ${total} ohne Marktpreis.` : "Alle Preise aktualisiert."));
+    scheduleSnapshot();
   }
   async function testConnections() {
     state.test = { running: true }; render();
@@ -649,6 +654,149 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     } catch (e) { toast("Die Datei ist kein gültiges Kartenscanner-Backup."); }
   }
 
+  // ---------- duplicates ----------
+  // Same card = same TCGdex id (or name + number) and same finish (normal vs. reverse holo).
+  const finishOf = c => /reverse/i.test((c && c.variant) || "") ? "r" : "n";
+  const identOf = c => !c ? "" : (c.market && c.market.tcgdexId ? `t:${c.market.tcgdexId}` : `k:${String(c.name || "").toLowerCase().trim()}|${String(c.number || "").toLowerCase().replace(/\s/g, "")}`) + "|" + finishOf(c);
+  const invCount = c => { const k = identOf(c); return state.cards.filter(x => identOf(x) === k).reduce((t, x) => t + (x.qty || 1), 0); };
+  // For each scan in the open session: how often the card was scanned before in this session, and how often it is in the inventory.
+  function sessionDupes() {
+    const seen = new Map(), out = new Map();
+    for (const it of openItems()) {
+      if (it.status !== "ok" || !it.card) continue;
+      const k = identOf(it.card), before = seen.get(k) || 0;
+      out.set(it.id, { ses: before, inv: invCount(it.card) });
+      seen.set(k, before + 1);
+    }
+    return out;
+  }
+  const dupChips = d => !d ? "" : (d.ses ? '<span class="chip warn">Doppelt gescannt</span>' : "") + (d.inv ? `<span class="chip own">Schon ${d.inv}× im Inventar</span>` : "");
+
+  // ---------- value history ----------
+  const dayId = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  let snapTimer;
+  function scheduleSnapshot() { clearTimeout(snapTimer); snapTimer = setTimeout(writeSnapshot, 2000); }
+  async function writeSnapshot() {
+    if (!state.user || !state.historyOk || !state.loaded) return;
+    const prices = {}; let total = 0, count = 0;
+    for (const c of state.cards) { const p = num(c.priceEur), q = c.qty || 1; count += q; if (p !== null) { total += p * q; prices[c.id] = [p, q]; } }
+    const id = dayId(), snap = { id, date: id, ts: Date.now(), total: r2(total) || 0, count, prices };
+    const ex = state.history.find(h => h.id === id);
+    if (ex && ex.total === snap.total && ex.count === snap.count && JSON.stringify(ex.prices) === JSON.stringify(prices)) return;
+    try {
+      await Store.put("history", snap);
+      const i = state.history.findIndex(h => h.id === id); if (i >= 0) state.history[i] = snap; else state.history.push(snap);
+      if (state.tab === "value") renderValue();
+    } catch (e) { if (isMissingTable(e)) { state.historyOk = false; if (state.tab === "value") renderValue(); } }
+  }
+  const isMissingTable = e => !!e && (e.code === "42P01" || e.code === "PGRST205" || /does not exist|schema cache/i.test(String(e.message || "")));
+  const histSorted = () => state.history.slice().sort((a, b) => a.id < b.id ? -1 : 1);
+  // The snapshot to compare against: the latest one at least `days` old, else the oldest one from before today.
+  function baseline(days) {
+    const h = histSorted(), today = dayId(), cut = dayId(new Date(Date.now() - days * 864e5));
+    let b = null; for (const x of h) if (x.id <= cut) b = x;
+    if (!b) b = h.find(x => x.id < today) || null;
+    return b;
+  }
+  function cardHistory(id) { return histSorted().filter(h => h.prices && h.prices[id]).map(h => ({ x: Date.parse(h.id + "T12:00:00"), y: h.prices[id][0] })); }
+  async function maybeAutoRefresh() {
+    if (!state.cards.length || state.refreshing) return;
+    let last = 0; try { last = Number(localStorage.getItem("ks-autoref") || 0); } catch (_) {}
+    if (Date.now() - last < 20 * 3600e3) { scheduleSnapshot(); return; }
+    try { localStorage.setItem("ks-autoref", String(Date.now())); } catch (_) {}
+    refreshAll({ silent: true });
+  }
+
+  // ---------- charts (inline SVG, colors from theme tokens) ----------
+  function lineChart(pts, o = {}) {
+    const W = o.w || 340, H = o.h || 150, L = o.compact ? 2 : 52, R = o.compact ? 4 : 10, T = o.compact ? 4 : 10, B = o.compact ? 4 : 24;
+    if (pts.length < 2) return "";
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    let y0 = Math.min(...ys), y1 = Math.max(...ys);
+    if (y1 - y0 < 0.01) { y0 -= 1; y1 += 1; }
+    const padY = (y1 - y0) * 0.12; y0 = Math.max(0, y0 - padY); y1 += padY;
+    const x0 = Math.min(...xs), x1 = Math.max(...xs) === x0 ? x0 + 1 : Math.max(...xs);
+    const X = x => L + (x - x0) / (x1 - x0) * (W - L - R), Y = y => T + (1 - (y - y0) / (y1 - y0)) * (H - T - B);
+    const line = pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+    const area = `${line}L${X(pts[pts.length - 1].x).toFixed(1)},${(H - B).toFixed(1)}L${X(pts[0].x).toFixed(1)},${(H - B).toFixed(1)}Z`;
+    const last = pts[pts.length - 1];
+    let grid = "";
+    if (!o.compact) {
+      for (const g of [y0, (y0 + y1) / 2, y1]) grid += `<line x1="${L}" x2="${W - R}" y1="${Y(g).toFixed(1)}" y2="${Y(g).toFixed(1)}" class="ch-grid"/><text x="${L - 6}" y="${(Y(g) + 4).toFixed(1)}" class="ch-lbl" text-anchor="end">${esc(money(g).replace(/,\d\d\s/, " "))}</text>`;
+      const d = t => new Date(t).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
+      grid += `<text x="${L}" y="${H - 6}" class="ch-lbl">${d(x0)}</text><text x="${W - R}" y="${H - 6}" class="ch-lbl" text-anchor="end">${d(x1)}</text>`;
+    }
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.label || "Verlauf")}">${grid}<path d="${area}" class="ch-area"/><path d="${line}" class="ch-line"/><circle cx="${X(last.x).toFixed(1)}" cy="${Y(last.y).toFixed(1)}" r="${o.compact ? 2.5 : 4}" class="ch-dot"/></svg>`;
+  }
+  const signed = v => (v > 0 ? "+" : v < 0 ? "−" : "±") + money(Math.abs(v));
+  const pct = (v, base) => base ? ` (${v >= 0 ? "+" : "−"}${Math.abs(v / base * 100).toFixed(1).replace(".", ",")} %)` : "";
+  const deltaCls = v => v > 0.004 ? "up" : v < -0.004 ? "down" : "flat";
+
+  // ---------- sets ----------
+  const SET_TTL = 7 * 864e5;
+  const setIdOf = c => c && c.market ? (c.market.setId || (c.market.tcgdexId ? String(c.market.tcgdexId).replace(/-[^-]+$/, "") : null)) : null;
+  async function getSet(setId) {
+    const cached = state.setInfo.get(setId); if (cached && cached !== "error") return cached;
+    try { const raw = localStorage.getItem("ks-set-" + setId); if (raw) { const o = JSON.parse(raw); if (Date.now() - o.t < SET_TTL) { state.setInfo.set(setId, o.v); return o.v; } } } catch (_) {}
+    const v = await tcgFetch(TCG + "en/sets/" + encodeURIComponent(setId));
+    if (!v || !Array.isArray(v.cards)) throw new Error("set");
+    const slim = { id: v.id, name: v.name, logo: v.logo || null, symbol: v.symbol || null, releaseDate: v.releaseDate || null, serie: (v.serie && v.serie.name) || null,
+      official: (v.cardCount && num(v.cardCount.official)) || null, total: (v.cardCount && num(v.cardCount.total)) || v.cards.length,
+      cards: v.cards.map(c => ({ id: c.id, localId: String(c.localId), name: c.name, image: typeof c.image === "string" ? c.image : null })) };
+    state.setInfo.set(setId, slim);
+    try { localStorage.setItem("ks-set-" + setId, JSON.stringify({ t: Date.now(), v: slim })); } catch (_) {}
+    return slim;
+  }
+  const setLoading = new Set();
+  function ensureSets(ids) {
+    const todo = ids.filter(id => !state.setInfo.has(id) && !setLoading.has(id));
+    if (!todo.length) return;
+    todo.forEach(id => setLoading.add(id));
+    (async () => {
+      for (const id of todo) {
+        try { await getSet(id); } catch (_) { state.setInfo.set(id, "error"); }
+        setLoading.delete(id);
+        if (state.tab === "sets") renderSets();
+        if (state.sheet && state.sheet.type === "set" && state.sheet.id === id) renderSheet();
+      }
+    })();
+  }
+  const isNum = s => /^\d+$/.test(String(s));
+  // Owned cards of a set, keyed by TCGdex card id.
+  function ownedInSet(setId) {
+    const m = new Map();
+    for (const c of state.cards) if (setIdOf(c) === setId && c.market && c.market.tcgdexId) {
+      const e = m.get(c.market.tcgdexId) || { qty: 0, value: 0, cards: [] };
+      e.qty += c.qty || 1; e.value += (num(c.priceEur) || 0) * (c.qty || 1); e.cards.push(c); m.set(c.market.tcgdexId, e);
+    }
+    return m;
+  }
+  function setProgress(info, owned) {
+    const official = info.official || info.total || info.cards.length;
+    let main = 0, secret = 0;
+    for (const sc of info.cards) if (owned.has(sc.id)) { if (isNum(sc.localId) && Number(sc.localId) <= official) main++; else secret++; }
+    return { official, main, secret, pct: official ? main / official : 0 };
+  }
+  async function loadMissingPrices(setId) {
+    const info = state.setInfo.get(setId); if (!info || info === "error" || state.setPricesBusy) return;
+    const owned = ownedInSet(setId);
+    const todo = info.cards.filter(c => !owned.has(c.id) && !state.setPrices.has(c.id));
+    state.setPricesBusy = { setId, done: 0, total: todo.length }; renderSheet();
+    let i = 0;
+    const worker = async () => {
+      while (i < todo.length) {
+        const sc = todo[i++];
+        try { const d = await tcgFetch(detailUrl("en", sc.id)); const b = d ? buildMarket(d, { variant: "Normal" }, "en", false) : null; state.setPrices.set(sc.id, b && b.market ? (b.market.trend ?? b.priceEur) : null); }
+        catch (e) { state.setPrices.set(sc.id, null); if (e && e.code === "tcg_network") { i = todo.length; } }
+        state.setPricesBusy.done++;
+        if (state.setPricesBusy.done % 6 === 0 && state.sheet && state.sheet.type === "set") renderSheet();
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    state.setPricesBusy = null;
+    if (state.sheet && state.sheet.type === "set") renderSheet();
+  }
+
   // ---------- sound ----------
   let actx = null;
   function audioUnlock() {
@@ -658,6 +806,18 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     } catch (_) {}
   }
   // "Ka-ching": short drawer clack (filtered noise) followed by two or three bell tones.
+  // Two short, falling beeps: "already scanned in this session".
+  function dupSound() {
+    if (!settings.sound || !actx) return;
+    try {
+      const t = actx.currentTime + 0.01;
+      [[660, 0], [440, 0.16]].forEach(([f, dt]) => {
+        const o = actx.createOscillator(), g = actx.createGain(); o.type = "triangle"; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(0.35, t + dt + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.14);
+        o.connect(g); g.connect(actx.destination); o.start(t + dt); o.stop(t + dt + 0.16);
+      });
+    } catch (_) {}
+  }
   function cashSound(big) {
     if (!settings.sound || !actx) return;
     try {
@@ -806,14 +966,19 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     updateCamSum();
     if (patch.status === "ok" && patch.card) {
       const c = patch.card, price = num(c.priceEur);
-      if (el) { el.querySelector(".n").textContent = c.name; el.querySelector(".p").textContent = price === null ? "kein Preis" : money(price); }
-      if (price !== null) {
-        const pill = $("#camPrice");
-        pill.textContent = money(price) + (c.priceSource === "markt" ? "" : " (KI)");
-        pill.classList.remove("on"); void pill.offsetWidth; pill.classList.add("on");
-        clearTimeout(priceTimer); priceTimer = setTimeout(() => pill.classList.remove("on"), 3500);
-        cashSound(price >= BIG_PRICE);
+      const d = sessionDupes().get(id) || { ses: 0, inv: invCount(c) };
+      const note = d.ses ? "Schon in dieser Session gescannt" : d.inv ? `Schon ${d.inv}× im Inventar` : "";
+      if (el) {
+        el.querySelector(".n").textContent = c.name + (d.ses ? " · doppelt" : d.inv ? ` · ${d.inv}× im Inventar` : "");
+        el.querySelector(".p").textContent = price === null ? "kein Preis" : money(price);
+        if (d.ses) el.classList.add("dup");
       }
+      const pill = $("#camPrice");
+      pill.innerHTML = `<b>${price === null ? "kein Preis" : esc(money(price)) + (c.priceSource === "markt" ? "" : " (KI)")}</b>${note ? `<small>${esc(note)}</small>` : ""}`;
+      pill.classList.toggle("dup", !!d.ses);
+      pill.classList.remove("on"); void pill.offsetWidth; pill.classList.add("on");
+      clearTimeout(priceTimer); priceTimer = setTimeout(() => pill.classList.remove("on"), d.ses ? 5000 : 3500);
+      if (d.ses) dupSound(); else if (price !== null) cashSound(price >= BIG_PRICE);
     } else if (el) {
       el.classList.add("err");
       el.querySelector(".n").textContent = patch.status === "nocard" ? "Keine Karte erkannt" : (patch.error || "Nicht erkannt");
@@ -837,16 +1002,20 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   function render() {
     const authed = !!state.user && !state.recovery;
     $("#view-auth").hidden = authed; $("#nav").hidden = !authed; $("#topRight").hidden = !authed;
-    if (!authed) { ["#view-scan", "#view-inv", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
+    if (!authed) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
     document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("#navDot").innerHTML = state.open && state.tab !== "scan" ? '<span class="dot" title="Offene Session"></span>' : "";
     $("#view-scan").hidden = state.tab !== "scan";
     $("#view-inv").hidden = state.tab !== "inv";
     $("#view-hist").hidden = state.tab !== "hist";
+    $("#view-sets").hidden = state.tab !== "sets";
+    $("#view-value").hidden = state.tab !== "value";
     $("#worth").textContent = state.loaded ? money(state.cards.reduce((s, c) => s + (num(c.priceEur) || 0) * (c.qty || 1), 0)) : "–";
     if (state.tab === "scan") renderScan();
     if (state.tab === "inv") renderInv();
     if (state.tab === "hist") renderHist();
+    if (state.tab === "sets") renderSets();
+    if (state.tab === "value") renderValue();
   }
 
   function authMsg(e) {
@@ -965,7 +1134,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         </div>
         ${scanButtons}
       </section>
-      ${items.length ? `<ul class="list">${items.slice().reverse().map(rowHTML).join("")}</ul><p class="fine" style="margin:-6px 0 0">Doppelt gescannt? Karte nach rechts wischen, um sie zu entfernen.</p>` : `<div class="empty">Noch keine Karte in dieser Session. Tippe auf „Karte scannen“.</div>`}
+      ${(state.dupView = sessionDupes(), "")}${items.length ? `<ul class="list">${items.slice().reverse().map(rowHTML).join("")}</ul><p class="fine" style="margin:-6px 0 0">Doppelt gescannt? Karte nach rechts wischen, um sie zu entfernen.</p>` : `<div class="empty">Noch keine Karte in dieser Session. Tippe auf „Karte scannen“.</div>`}
       <div class="session-foot">
         <button class="btn primary" type="button" data-act="finish" ${ok.length && !pending ? "" : "disabled"}>${pending ? "Warte auf Erkennung …" : "Session abschließen"}</button>
         <button class="btn ghost danger" type="button" data-act="discard">Verwerfen</button>
@@ -998,7 +1167,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const noMarket = c.priceSource !== "markt" && c.priceSource !== "hand";
     return `<li class="row" data-act="edit-item" data-id="${esc(it.id)}" tabindex="0" role="button" aria-label="${esc(c.name)} bearbeiten">${mini}
       <div style="min-width:0"><div class="nm">${esc(c.name)}</div><div class="sub">${subLine(c)}</div>
-      <div class="chips">${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ""}${c.variant && c.variant !== "Normal" ? `<span class="chip">${esc(c.variant)}</span>` : ""}<span class="chip">${esc(c.condition || "NM")}</span>${lowConf ? '<span class="chip warn">unsicher – prüfen</span>' : ""}${c.market && c.market.ambiguous ? '<span class="chip warn">Set prüfen</span>' : ""}</div>
+      <div class="chips">${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ""}${c.variant && c.variant !== "Normal" ? `<span class="chip">${esc(c.variant)}</span>` : ""}<span class="chip">${esc(c.condition || "NM")}</span>${lowConf ? '<span class="chip warn">unsicher – prüfen</span>' : ""}${c.market && c.market.ambiguous ? '<span class="chip warn">Set prüfen</span>' : ""}${dupChips(state.dupView && state.dupView.get(it.id))}</div>
       ${noMarket && c.marketError ? `<div class="erractions"><span class="fine">${esc(c.marketError)}</span><button class="btn small" type="button" data-act="search-item" data-id="${esc(it.id)}">Karte suchen</button></div>` : ""}</div>
       <div class="px">${money(num(c.priceEur) === null ? null : c.priceEur * (it.qty || 1))}<small>${(it.qty || 1) > 1 ? `${it.qty} × ${money(c.priceEur)}` : esc(srcLabel(c))}</small></div></li>`;
   }
@@ -1038,6 +1207,78 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       </button>`).join("")}</div>`;
   }
 
+  function renderSets() {
+    const v = $("#view-sets");
+    if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
+    const ids = [...new Set(state.cards.map(setIdOf).filter(Boolean))];
+    const unassigned = state.cards.filter(c => !setIdOf(c)).length;
+    if (!ids.length) { v.innerHTML = `<div class="empty">Noch keine Sets. Sobald Karten mit Marktpreis im Inventar sind, siehst du hier, wie viele Karten dir pro Set fehlen.</div>`; return; }
+    ensureSets(ids);
+    const rows = ids.map(id => {
+      const info = state.setInfo.get(id), owned = ownedInSet(id);
+      const value = [...owned.values()].reduce((t, e) => t + e.value, 0);
+      if (!info || info === "error") {
+        const anyCard = state.cards.find(c => setIdOf(c) === id);
+        return { id, sort: -1, html: `<button class="setrow" type="button" data-act="open-set" data-id="${esc(id)}"><div class="setlogo"></div><div style="min-width:0"><div class="nm">${esc((anyCard && anyCard.market && anyCard.market.matchSet) || id)}</div><div class="sub">${info === "error" ? "Set-Daten nicht ladbar" : "Wird geladen …"} · ${owned.size} Karte${owned.size === 1 ? "" : "n"}</div></div><div class="px">${money(value)}</div></button>` };
+      }
+      const p = setProgress(info, owned);
+      return { id, sort: p.pct, html: `<button class="setrow" type="button" data-act="open-set" data-id="${esc(id)}">
+        <div class="setlogo">${info.logo ? `<img src="${esc(info.logo)}.png" alt="" loading="lazy">` : ""}</div>
+        <div style="min-width:0"><div class="nm">${esc(info.name)}</div>
+          <div class="sub"><span class="mono">${p.main}/${p.official}</span>${p.secret ? ` + ${p.secret} Secret` : ""} · ${Math.floor(p.pct * 100)} %</div>
+          <div class="prog"><i style="width:${(p.pct * 100).toFixed(1)}%"></i></div></div>
+        <div class="px">${money(value)}<small>dein Wert</small></div></button>` };
+    }).sort((a, b) => b.sort - a.sort);
+    v.innerHTML = `<div class="notice">${ids.length} Set${ids.length === 1 ? "" : "s"} in deiner Sammlung. Tippe auf ein Set, um fehlende Karten zu sehen.</div>
+      <div class="setlist">${rows.map(r => r.html).join("")}</div>
+      ${unassigned ? `<p class="fine">${unassigned} Karte${unassigned === 1 ? " ist" : "n sind"} noch keinem Set zugeordnet (ohne Marktpreis). Ordne sie in der Kartenansicht über „Andere Karte zuordnen“ zu.</p>` : ""}`;
+  }
+
+  function renderValue() {
+    const v = $("#view-value");
+    if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
+    if (!state.historyOk) {
+      v.innerHTML = `<div class="notice stack" style="gap:8px"><strong>Wertentwicklung noch nicht eingerichtet</strong><span>In deiner Datenbank fehlt die Tabelle für den Verlauf. Führe im Supabase SQL Editor einmal den Abschnitt „history“ aus supabase/schema.sql aus und lade die App neu.</span></div>`;
+      return;
+    }
+    const total = state.cards.reduce((t, c) => t + (num(c.priceEur) || 0) * (c.qty || 1), 0);
+    const h = histSorted(), pts = h.slice(-120).map(x => ({ x: Date.parse(x.id + "T12:00:00"), y: x.total }));
+    const today = dayId();
+    if (!h.some(x => x.id === today)) pts.push({ x: Date.parse(today + "T12:00:00"), y: r2(total) });
+    const b7 = baseline(7), b30 = baseline(30);
+    const card = (label, base) => {
+      if (!base) return `<div class="stat"><div class="eyebrow">${label}</div><div class="v flat">–</div></div>`;
+      const dv = total - base.total;
+      return `<div class="stat"><div class="eyebrow">${label}</div><div class="v ${deltaCls(dv)}">${signed(dv)}</div><div class="fine">seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))}</div></div>`;
+    };
+    // Market movement only: same cards, price then vs. now (ignores cards added or removed since).
+    const base = b7 || h.find(x => x.id < today);
+    let movers = [], marketDelta = 0;
+    if (base && base.prices) {
+      for (const c of state.cards) {
+        const old = base.prices[c.id], now = num(c.priceEur);
+        if (!old || now === null) continue;
+        const dq = (now - old[0]) * (c.qty || 1); marketDelta += dq;
+        if (Math.abs(now - old[0]) >= 0.01) movers.push({ c, old: old[0], now, dq });
+      }
+    }
+    const up = movers.filter(m => m.dq > 0).sort((a, b) => b.dq - a.dq).slice(0, 5), down = movers.filter(m => m.dq < 0).sort((a, b) => a.dq - b.dq).slice(0, 5);
+    const mv = m => `<li><button type="button" class="mover" data-act="detail" data-id="${esc(m.c.id)}"><div class="mini">${imgTag(thumbOf(m.c.thumb, m.c), "")}</div><div style="min-width:0"><div class="nm">${esc(m.c.name)}</div><div class="sub">${money(m.old)} → ${money(m.now)}${(m.c.qty || 1) > 1 ? ` · ×${m.c.qty}` : ""}</div></div><div class="px ${deltaCls(m.dq)}">${signed(m.dq)}</div></button></li>`;
+    const rf = state.refreshing;
+    v.innerHTML = `
+      <section class="session-head">
+        <div class="session-meta"><div><div class="eyebrow">Wert deiner Sammlung</div><div class="running">${money(total)}</div></div>
+        <button class="btn small" type="button" data-act="refresh-all" ${rf ? "disabled" : ""}>${rf ? `Aktualisiere ${rf.done}/${rf.total} …` : "Preise aktualisieren"}</button></div>
+        ${pts.length >= 2 ? lineChart(pts, { label: "Wert der Sammlung über Zeit" }) : `<p class="fine" style="margin:0">Ab heute speichert die App jeden Tag den Wert deiner Sammlung. Morgen siehst du hier die erste Kurve.</p>`}
+      </section>
+      <div class="stats stats2">${card("7 Tage", b7)}${card("30 Tage", b30)}</div>
+      ${base ? `<div class="notice">Davon durch Preisänderungen am Markt: <strong class="${deltaCls(marketDelta)}">${signed(marketDelta)}</strong> seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))}. Der Rest kommt von neu hinzugefügten oder entfernten Karten.</div>` : ""}
+      ${up.length ? `<h3 class="sec">Gewinner</h3><ul class="movers">${up.map(mv).join("")}</ul>` : ""}
+      ${down.length ? `<h3 class="sec">Verlierer</h3><ul class="movers">${down.map(mv).join("")}</ul>` : ""}
+      ${base && !movers.length ? `<p class="fine">Seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))} haben sich die Preise deiner Karten nicht verändert.</p>` : ""}
+      <p class="fine">Die Preise werden einmal am Tag beim Öffnen der App automatisch aktualisiert (Cardmarket-Trend über TCGdex).</p>`;
+  }
+
   function renderHist() {
     const v = $("#view-hist");
     const done = state.sessions.filter(s => s.status === "done").sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0));
@@ -1064,6 +1305,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     } else {
       inner += `<div class="fine">${c.priceSource === "hand" ? "Von dir eingetragen." : num(c.priceEur) !== null ? "Grobe KI-Schätzung, kein Marktpreis." : "Noch kein Preis."}${c.marketError ? " " + esc(c.marketError) : ""}</div>`;
     }
+    const hist = cardHistory(c.id);
+    if (hist.length >= 2) {
+      const dv = hist[hist.length - 1].y - hist[0].y;
+      inner += `<div class="spark"><div><div class="k">Preisverlauf seit ${esc(dOnly(hist[0].x))}</div><div class="v ${deltaCls(dv)}">${signed(dv)}${pct(dv, hist[0].y)}</div></div>${lineChart(hist, { w: 140, h: 40, compact: true, label: "Preisverlauf" })}</div>`;
+    }
     return `<div class="pricebox">${inner}<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" type="button" data-act="refresh-card" data-id="${esc(c.id)}" ${s.refreshing ? "disabled" : ""}>${s.refreshing ? "Rufe Preis ab …" : "Marktpreis aktualisieren"}</button><button class="btn small" type="button" data-act="search-card" data-id="${esc(c.id)}">Andere Karte zuordnen</button></div></div>`;
   }
 
@@ -1071,7 +1317,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const s = state.sheet, root = $("#sheetRoot");
     if (!s) { root.innerHTML = ""; return; }
     document.body.style.overflow = "hidden";
-    let title = "", body = "";
+    let title = "", body = "", dv = new Map();
     if (s.type === "finish") {
       const ok = openItems().filter(i => i.status === "ok");
       const total = sessionTotal(ok), count = ok.reduce((a, i) => a + (i.qty || 1), 0);
@@ -1079,7 +1325,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       title = "Session abschließen";
       body = `<div class="stack">
         <div class="endbetrag"><div class="eyebrow">Endbetrag dieser Session</div><div class="big">${money(total)}</div><div>${count} Karte${count === 1 ? "" : "n"}</div></div>
-        <ul class="compact">${ok.map(i => swipeWrap(i.id, `<div class="cline swipe-fg"><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ""} <span class="muted">${esc(i.card.number || "")} · ${esc(srcLabel(i.card))}</span></span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span><button class="icon-del" type="button" data-act="del-item" data-id="${esc(i.id)}" aria-label="${esc(i.card.name)} entfernen">${I.trash}</button></div>`)).join("")}</ul>
+        ${(dv = sessionDupes(), "")}<ul class="compact">${ok.map(i => swipeWrap(i.id, `<div class="cline swipe-fg"><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ""} <span class="muted">${esc(i.card.number || "")} · ${esc(srcLabel(i.card))}</span>${(dv.get(i.id) || {}).ses ? ' <span class="chip warn">doppelt</span>' : ""}</span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span><button class="icon-del" type="button" data-act="del-item" data-id="${esc(i.id)}" aria-label="${esc(i.card.name)} entfernen">${I.trash}</button></div>`)).join("")}</ul>
         <p class="fine" style="margin:0">Doppelt gescannt? Nach rechts wischen oder auf den Mülleimer tippen.</p>
         <p class="fine">Grundlage ist der Cardmarket-Trendpreis (Near Mint) aus TCGdex.${ki ? ` ${ki} Karte${ki === 1 ? "" : "n"} ohne Marktpreis ${ki === 1 ? "ist" : "sind"} mit der KI-Schätzung oder ohne Wert eingerechnet.` : ""} Der Zustand deiner Karte kann den erzielbaren Preis senken.</p>
         <button class="btn primary block" type="button" data-act="commit" ${state.busy ? "disabled" : ""}>${state.busy ? "Wird übernommen …" : "Zum Inventar hinzufügen"}</button>
@@ -1125,6 +1371,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <div class="actions">
           <button class="btn" type="button" data-act="edit-card" data-id="${esc(c.id)}">Bearbeiten</button>
           <a class="btn" href="https://www.cardmarket.com/de/Pokemon/Products/Search?searchString=${encodeURIComponent(cmQuery)}" target="_blank" rel="noopener">Auf Cardmarket ansehen</a>
+          ${setIdOf(c) ? `<button class="btn" type="button" data-act="open-set" data-id="${esc(setIdOf(c))}">Set-Fortschritt</button>` : ""}
           <button class="btn danger" type="button" data-act="${s.confirmDelete ? "delete-yes" : "delete"}" data-id="${esc(c.id)}">${s.confirmDelete ? "Wirklich löschen?" : "Löschen"}</button>
         </div>
       </div>`;
@@ -1180,6 +1427,48 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <label>Sprache des Namens<select class="field" id="s-lang" name="lang">${langOpt}</select></label>
         <button class="btn primary full" type="submit">${I.find}<span>Suchen</span></button>
       </form>${res}</div>`;
+    } else if (s.type === "set") {
+      const info = state.setInfo.get(s.id);
+      if (!info || info === "error") {
+        ensureSets([s.id]);
+        title = "Set";
+        body = info === "error" ? `<div class="banner">Die Set-Daten ließen sich nicht laden. Prüfe deine Verbindung und versuch es erneut.</div><button class="btn" type="button" data-act="set-retry" data-id="${esc(s.id)}">Erneut versuchen</button>` : `<div class="notice">Set wird geladen …</div>`;
+      } else {
+        title = info.name;
+        const owned = ownedInSet(s.id), p = setProgress(info, owned);
+        const value = [...owned.values()].reduce((t, e) => t + e.value, 0);
+        const f = s.filter || "missing";
+        const list = info.cards.filter(c => f === "all" || (f === "missing" ? !owned.has(c.id) : owned.has(c.id)));
+        const missing = info.cards.filter(c => !owned.has(c.id));
+        const known = missing.filter(c => state.setPrices.has(c.id));
+        const missSum = known.reduce((t, c) => t + (state.setPrices.get(c.id) || 0), 0);
+        const busy = state.setPricesBusy && state.setPricesBusy.setId === s.id ? state.setPricesBusy : null;
+        const tile = c => {
+          const o = owned.get(c.id), price = o ? (o.cards[0].priceEur) : state.setPrices.get(c.id);
+          const img = c.image ? `<img src="${esc(c.image)}/low.webp" alt="" loading="lazy">` : `<span class="noimg">${esc(c.localId)}</span>`;
+          const inner = `<div class="sart">${img}${o && o.qty > 1 ? `<span class="qty">×${o.qty}</span>` : ""}</div><div class="sinfo"><span class="mono">${esc(c.localId)}</span> ${esc(c.name)}${price != null ? `<b>${esc(money(price))}</b>` : ""}</div>`;
+          return o ? `<button class="stile own" type="button" data-act="detail" data-id="${esc(o.cards[0].id)}">${inner}</button>`
+                   : `<a class="stile miss" href="https://www.cardmarket.com/de/Pokemon/Products/Search?searchString=${encodeURIComponent(c.name + " " + c.localId)}" target="_blank" rel="noopener">${inner}</a>`;
+        };
+        body = `<div class="stack">
+          <div class="pricebox">
+            <div class="eyebrow">${esc([info.serie, info.releaseDate ? info.releaseDate.slice(0, 4) : null].filter(Boolean).join(" · ") || "Set")}</div>
+            <div class="big">${p.main} / ${p.official}</div>
+            <div class="prog big"><i style="width:${(p.pct * 100).toFixed(1)}%"></i></div>
+            <div class="fine">${Math.floor(p.pct * 100)} % vollständig${p.secret ? ` · dazu ${p.secret} Secret Rare${p.secret === 1 ? "" : "s"}` : ""} · dein Wert ${money(value)}</div>
+          </div>
+          <div class="pricebox">
+            <div class="eyebrow">Fehlende Karten: ${missing.length}</div>
+            ${known.length ? `<div class="fine">Geschätzt zum Vervollständigen: <strong>${money(missSum)}</strong> (Cardmarket-Trend, ${known.length} von ${missing.length} Preisen geladen)</div>` : `<div class="fine">Lade die Preise, um zu sehen, was das Vervollständigen kosten würde.</div>`}
+            ${known.length < missing.length ? `<div><button class="btn small" type="button" data-act="set-prices" data-id="${esc(s.id)}" ${busy || state.setPricesBusy ? "disabled" : ""}>${busy ? `Lade Preise ${busy.done}/${busy.total} …` : `Preise der fehlenden Karten laden (${missing.length - known.length})`}</button></div>` : ""}
+          </div>
+          <div class="seg" role="group" aria-label="Filter">
+            ${[["missing", `Fehlend (${missing.length})`], ["owned", `Vorhanden (${owned.size})`], ["all", `Alle (${info.cards.length})`]].map(([k, l]) => `<button type="button" data-act="set-filter" data-f="${k}" aria-pressed="${f === k}">${l}</button>`).join("")}
+          </div>
+          ${list.length ? `<div class="sgrid">${list.map(tile).join("")}</div>` : `<div class="empty">${f === "missing" ? "Du hast alle Karten dieses Sets. Glückwunsch!" : "Keine Karten."}</div>`}
+          <p class="fine" style="margin:0">Fehlende Karten öffnen die Cardmarket-Suche. Gezählt werden Karten mit Marktpreis-Zuordnung, unabhängig von Sprache und Variante.</p>
+        </div>`;
+      }
     } else if (s.type === "settings") {
       title = "Einstellungen";
       const key = settings.apiKey;
@@ -1340,6 +1629,10 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
       case "logout": closeSheet(); sb.auth.signOut().catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
+      case "open-set": openSheet({ type: "set", id, filter: "missing" }); break;
+      case "set-filter": state.sheet.filter = el.dataset.f; renderSheet(); break;
+      case "set-prices": loadMissingPrices(id); break;
+      case "set-retry": state.setInfo.delete(id); try { localStorage.removeItem("ks-set-" + id); } catch (_) {} renderSheet(); break;
       case "import": $("#importIn").click(); break;
     }
   });
@@ -1363,6 +1656,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     // Scans left half-done (app closed mid-recognition) can't finish any more.
     for (const it of items) if (it.status === "pending" && !state.running.has(it.id) && Date.now() - (it.createdAt || 0) > 3 * 60e3)
       await save("items", { ...it, status: it.card ? "ok" : "error", error: it.card ? null : "Die Erkennung wurde unterbrochen. Tippe auf „Erneut erkennen“." }).catch(() => {});
+    try { state.history = await Store.all("history"); state.historyOk = true; }
+    catch (e) { state.history = []; state.historyOk = !isMissingTable(e); }
     state.loaded = true; state.lastSync = Date.now();
   }
   function clearData() {
@@ -1377,6 +1672,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.user && state.user.id === user.id) { state.user = user; render(); return; }
     state.user = user; clearData(); state.authMsg = null; state.authErr = null; render();
     try { await loadAll(); } catch (e) { toast("Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); }
+    maybeAutoRefresh();
     const L = await Legacy.read();
     state.legacy = L && ((L.cards || []).length || (L.sessions || []).length || (L.items || []).length) ? L : null;
     render();

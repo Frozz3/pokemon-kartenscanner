@@ -58,3 +58,16 @@ create policy "own images update" on storage.objects for update to authenticated
 drop policy if exists "own images delete" on storage.objects;
 create policy "own images delete" on storage.objects for delete to authenticated
   using (bucket_id = 'card-images' and (storage.foldername(name))[1] = (select auth.uid())::text);
+
+-- history: ein Schnappschuss pro Tag für die Wertentwicklung (id = Datum, z. B. 2026-10-26).
+create table if not exists public.history (
+  id text not null,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  data jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+alter table public.history enable row level security;
+drop policy if exists "own history" on public.history;
+create policy "own history" on public.history for all to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
