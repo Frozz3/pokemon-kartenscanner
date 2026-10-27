@@ -54,127 +54,36 @@
   const APP_URL = location.origin + location.pathname;
   let sb = null;
 
-  // ---------- end-to-end encryption ("Tresor") ----------
-  // A random data key (AES-256-GCM) encrypts every record and photo on the device before upload.
-  // The data key is stored in the account only wrapped with a key derived from the vault password
-  // (PBKDF2-SHA-256, 600,000 rounds), so Supabase only ever sees ciphertext. Each device keeps the
-  // unwrapped key as a non-extractable CryptoKey in IndexedDB after the first unlock.
-  const te = new TextEncoder(), td = new TextDecoder();
-  const b64 = buf => { const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let str = ""; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
-  const unb64 = str => Uint8Array.from(atob(str), ch => ch.charCodeAt(0));
-  const MAGIC = new Uint8Array([0x4B, 0x53, 0x45, 0x31]); // "KSE1" marks an encrypted photo
-  const isMagic = u => u.length > 16 && u[0] === MAGIC[0] && u[1] === MAGIC[1] && u[2] === MAGIC[2] && u[3] === MAGIC[3];
-  const PBKDF2_ROUNDS = 600000;
-  const Vault = {
-    key: null,
-    meta: () => (state.user && state.user.user_metadata && state.user.user_metadata.vault) || null,
-    async kek(pass, salt, rounds) {
-      const base = await crypto.subtle.importKey("raw", te.encode(pass.normalize("NFC")), "PBKDF2", false, ["deriveKey"]);
-      return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: rounds, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["wrapKey", "unwrapKey"]);
-    },
-    async wrap(dek, pass, created) {
-      const salt = crypto.getRandomValues(new Uint8Array(16)), wiv = crypto.getRandomValues(new Uint8Array(12));
-      const kek = await Vault.kek(pass, salt, PBKDF2_ROUNDS);
-      const wrapped = await crypto.subtle.wrapKey("raw", dek, kek, { name: "AES-GCM", iv: wiv });
-      return { v: 1, alg: "AES-256-GCM", kdf: "PBKDF2-SHA256", rounds: PBKDF2_ROUNDS, salt: b64(salt), wiv: b64(wiv), wrapped: b64(wrapped), created: created || new Date().toISOString() };
-    },
-    async create(pass) {
-      const dek = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-      return Vault.wrap(dek, pass);
-    },
-    // Throws if the password is wrong (AES-GCM authentication fails).
-    async open(pass, meta, extractable = false) {
-      const kek = await Vault.kek(pass, unb64(meta.salt), meta.rounds || PBKDF2_ROUNDS);
-      return crypto.subtle.unwrapKey("raw", unb64(meta.wrapped), kek, { name: "AES-GCM", iv: unb64(meta.wiv) }, { name: "AES-GCM", length: 256 }, extractable, ["encrypt", "decrypt"]);
-    },
-    isEnc: d => !!d && d.v === 1 && typeof d.ct === "string" && typeof d.iv === "string" && Object.keys(d).length === 3,
-    async encJSON(obj) {
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, Vault.key, te.encode(JSON.stringify(obj)));
-      return { v: 1, iv: b64(iv), ct: b64(ct) };
-    },
-    async decJSON(d) { return JSON.parse(td.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(d.iv) }, Vault.key, unb64(d.ct)))); },
-    async encBlob(blob) {
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, Vault.key, await blob.arrayBuffer());
-      return new Blob([MAGIC, iv, ct], { type: "image/jpeg" });
-    },
-    async decBlob(blob) {
-      const u = new Uint8Array(await blob.arrayBuffer());
-      if (!isMagic(u)) return new Blob([u], { type: "image/jpeg" }); // photo from before encryption
-      const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: u.slice(4, 16) }, Vault.key, u.slice(16));
-      return new Blob([pt], { type: "image/jpeg" });
-    },
-  };
-  // Unwrapped data keys per account, kept on this device only.
-  const KeyStore = (() => {
-    const open = () => new Promise((res, rej) => { const r = indexedDB.open("kartenscanner-keys", 1); r.onupgradeneeded = () => r.result.createObjectStore("keys"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-    const run = async (mode, fn) => { const d = await open(); return new Promise((res, rej) => { const t = d.transaction("keys", mode); const q = fn(t.objectStore("keys")); t.oncomplete = () => { d.close(); res(q && q.result); }; t.onerror = () => { d.close(); rej(t.error); }; }); };
-    return {
-      get: uid => run("readonly", st => st.get(uid)).catch(() => null),
-      set: (uid, v) => run("readwrite", st => { st.put(v, uid); return null; }),
-      del: uid => run("readwrite", st => { st.delete(uid); return null; }).catch(() => {}),
-    };
-  })();
-
-  const TABLES = ["cards", "sessions", "items", "history"];
   const Store = {
     async all(t) {
       const out = [];
       for (let from = 0; ; from += 1000) {
         const { data, error } = await sb.from(t).select("id,data").range(from, from + 999);
         if (error) throw error;
-        for (const r of data) {
-          let d = r.data;
-          if (Vault.isEnc(d)) { try { d = await Vault.decJSON(d); } catch (_) { state.decryptErrors++; continue; } }
-          else state.plainRows.push(t);
-          out.push({ ...d, id: r.id });
-        }
+        out.push(...data.map(r => ({ ...r.data, id: r.id })));
         if (data.length < 1000) break;
       }
       return out;
     },
     async put(t, obj) {
-      if (!Vault.key) throw new Error("vault locked");
       const { id, ...rest } = obj;
-      const { error } = await sb.from(t).upsert({ id, data: await Vault.encJSON(rest), updated_at: new Date().toISOString() });
+      const { error } = await sb.from(t).upsert({ id, data: rest, updated_at: new Date().toISOString() });
       if (error) throw error;
     },
     async del(t, id) { const { error } = await sb.from(t).delete().eq("id", id); if (error) throw error; },
-    async ids(t) {
-      const out = [];
-      for (let from = 0; ; from += 1000) {
-        const { data, error } = await sb.from(t).select("id").range(from, from + 999);
-        if (error) throw error;
-        out.push(...data.map(r => r.id)); if (data.length < 1000) break;
-      }
-      return out;
-    },
   };
   const Img = {
     path: id => `${state.user.id}/${id}.jpg`,
     async put(id, dataURL) {
-      if (!Vault.key) throw new Error("vault locked");
-      const { error } = await sb.storage.from(BUCKET).upload(Img.path(id), await Vault.encBlob(dataURLtoBlob(dataURL)), { contentType: "image/jpeg", upsert: true });
+      const { error } = await sb.storage.from(BUCKET).upload(Img.path(id), dataURLtoBlob(dataURL), { contentType: "image/jpeg", upsert: true });
       if (error) throw error;
     },
-    async raw(path) { const { data, error } = await sb.storage.from(BUCKET).download(path); if (error) throw error; return data; },
-    async blob(id) { return Vault.decBlob(await Img.raw(Img.path(id))); },
+    async blob(id) { const { data, error } = await sb.storage.from(BUCKET).download(Img.path(id)); if (error) throw error; return data; },
     async url(id) {
       if (state.imgCache.has(id)) return state.imgCache.get(id);
       const u = URL.createObjectURL(await Img.blob(id)); state.imgCache.set(id, u); return u;
     },
     async del(id) { if (!id) return; state.imgCache.delete(id); try { await sb.storage.from(BUCKET).remove([Img.path(id)]); } catch (_) {} },
-    async list() {
-      const out = [];
-      for (let offset = 0; ; offset += 1000) {
-        const { data, error } = await sb.storage.from(BUCKET).list(state.user.id, { limit: 1000, offset });
-        if (error) throw error;
-        out.push(...data.filter(f => f && f.name && f.id !== null).map(f => `${state.user.id}/${f.name}`));
-        if (data.length < 1000) break;
-      }
-      return out;
-    },
   };
 
   // Data from the first, device-only version (IndexedDB), offered once for import into the account.
@@ -205,7 +114,6 @@
     sheet: null, imgCache: new Map(), busy: false, refreshing: null, test: null, marketDown: null,
     user: null, authReady: false, recovery: false, authMode: "login", authBusy: false, authMsg: null, authErr: null, authEmail: "",
     legacy: null, migrating: null, lastSync: 0,
-    vaultReady: false, vaultMode: null, vaultBusy: false, vaultErr: null, encrypting: null, decryptErrors: 0, plainRows: [],
     history: [], historyOk: true, setInfo: new Map(), setPrices: new Map(), setPricesBusy: null,
   };
 
@@ -1121,9 +1029,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   const thumbOf = (thumb, card) => thumb || officialImg(card, "low");
 
   function render() {
-    const authed = !!state.user && !state.recovery, open = authed && state.vaultReady;
-    $("#view-auth").hidden = open; $("#nav").hidden = !open; $("#topRight").hidden = !open;
-    if (!open) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); if (authed) renderVault(); else renderAuth(); return; }
+    const authed = !!state.user && !state.recovery;
+    $("#view-auth").hidden = authed; $("#nav").hidden = !authed; $("#topRight").hidden = !authed;
+    if (!authed) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
     document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("#navDot").innerHTML = state.open && state.tab !== "scan" ? '<span class="dot" title="Offene Session"></span>' : "";
     $("#view-scan").hidden = state.tab !== "scan";
@@ -1150,157 +1058,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind für diese App deaktiviert.";
     if (/fetch|network/i.test(msg)) return "Keine Verbindung zum Server. Prüfe dein Internet.";
     return msg || "Das hat nicht geklappt. Versuch es erneut.";
-  }
-
-  function renderVault() {
-    const v = $("#view-auth"), m = state.vaultMode;
-    if (!m) { v.innerHTML = `<div class="notice">Tresor wird geöffnet …</div>`; return; }
-    const err = state.vaultErr ? `<div class="banner">${esc(state.vaultErr)}</div>` : "";
-    const busyBtn = (label) => `<button class="btn primary full" type="submit" ${state.vaultBusy ? "disabled" : ""}>${state.vaultBusy ? "Einen Moment …" : label}</button>`;
-    const logout = `<button class="btn ghost small" type="button" data-act="logout">Abmelden</button>`;
-    let html = "";
-    if (m === "setup") {
-      html = `<h2>Tresor einrichten</h2>
-        <p>Deine Karten, Werte und Fotos werden ab jetzt auf diesem Gerät verschlüsselt, bevor sie in die Datenbank gehen. Dafür brauchst du ein eigenes Tresor-Passwort. Es ist nicht dein Login-Passwort und wird nirgends gespeichert.</p>
-        <div class="banner"><span><strong>Wichtig:</strong> Vergisst du das Tresor-Passwort, kann niemand deine Daten wiederherstellen, auch du nicht. Schreib es dir auf oder speichere es in deinem Passwort-Manager.</span></div>
-        ${err}
-        <form class="edit" id="vaultForm" novalidate>
-          <input type="text" name="username" autocomplete="username" value="${esc((state.user && state.user.email) || "")} (Tresor)" hidden>
-          <label class="full">Tresor-Passwort (mind. 10 Zeichen)<input class="field" id="v-pw" name="pw" type="password" autocomplete="new-password" required></label>
-          <label class="full">Tresor-Passwort wiederholen<input class="field" id="v-pw2" name="pw2" type="password" autocomplete="new-password" required></label>
-          <label class="full check"><input type="checkbox" id="v-ok" name="ok"> Ich habe das Tresor-Passwort sicher notiert.</label>
-          ${busyBtn("Tresor einrichten und Daten verschlüsseln")}
-        </form><div class="auth-links">${logout}</div>`;
-    } else if (m === "unlock") {
-      html = `<h2>Tresor entsperren</h2>
-        <p>Deine Daten sind verschlüsselt. Gib auf diesem Gerät einmal dein Tresor-Passwort ein, danach merkt sich das Gerät den Schlüssel.</p>
-        ${err}
-        <form class="edit" id="vaultForm" novalidate>
-          <input type="text" name="username" autocomplete="username" value="${esc((state.user && state.user.email) || "")} (Tresor)" hidden>
-          <label class="full">Tresor-Passwort<input class="field" id="v-pw" name="pw" type="password" autocomplete="current-password" required></label>
-          <label class="full check"><input type="checkbox" id="v-remember" name="remember" checked> Auf diesem Gerät merken</label>
-          ${busyBtn("Entsperren")}
-        </form>
-        <div class="auth-links"><button class="btn ghost small" type="button" data-act="vault-forgot">Tresor-Passwort vergessen?</button>${logout}</div>`;
-    } else if (m === "reset") {
-      html = `<h2>Tresor zurücksetzen</h2>
-        <p>Ohne Tresor-Passwort lassen sich deine verschlüsselten Daten nicht mehr öffnen. Du kannst nur neu anfangen: Dabei werden <strong>alle Karten, Sessions, der Wertverlauf und alle Fotos</strong> in deinem Konto endgültig gelöscht.</p>
-        ${err}
-        <form class="edit" id="vaultForm" novalidate>
-          <label class="full">Zum Bestätigen LÖSCHEN eintippen<input class="field" id="v-confirm" name="confirm" autocomplete="off" autocapitalize="characters" required></label>
-          <button class="btn danger full" type="submit" ${state.vaultBusy ? "disabled" : ""}>${state.vaultBusy ? "Lösche …" : "Alles löschen und neu beginnen"}</button>
-        </form>
-        <div class="auth-links"><button class="btn ghost small" type="button" data-act="vault-mode" data-mode="unlock">Zurück</button></div>`;
-    }
-    v.innerHTML = `<section class="start auth"><img class="auth-logo" src="icons/icon.svg" alt="" width="64" height="64">${html}</section>`;
-    const f = $("#vaultForm"); if (f) f.onsubmit = e => { e.preventDefault(); submitVault(new FormData(f), m); };
-  }
-
-  async function changeVaultPassword(f) {
-    const s = state.sheet; if (!s) return;
-    const old = String(f.get("old") || ""), nw = String(f.get("new") || "");
-    const fail = msg => { s.err = msg; s.busy = false; renderSheet(); };
-    if (nw.length < 10) return fail("Das neue Passwort braucht mindestens 10 Zeichen.");
-    if (nw !== String(f.get("new2") || "")) return fail("Die neuen Passwörter stimmen nicht überein.");
-    s.busy = true; s.err = null; renderSheet();
-    try {
-      await freshUser();
-      const meta = Vault.meta();
-      let dek;
-      try { dek = await Vault.open(old, meta, true); } catch (e) { return fail("Das aktuelle Tresor-Passwort ist falsch."); }
-      const next = await Vault.wrap(dek, nw, meta.created);
-      const { error } = await sb.auth.updateUser({ data: { vault: next } }); if (error) throw error;
-      await freshUser();
-    } catch (e) { return fail("Ändern hat nicht geklappt. Prüfe deine Verbindung."); }
-    closeSheet(); toast("Tresor-Passwort geändert.");
-  }
-  async function freshUser() { const { data, error } = await sb.auth.getUser(); if (error) throw error; state.user = data.user; return data.user; }
-  async function openVault() {
-    state.vaultReady = false; state.vaultMode = null; state.vaultErr = null; Vault.key = null; render();
-    try { await freshUser(); } catch (_) {}
-    const meta = Vault.meta();
-    if (!meta) { state.vaultMode = "setup"; render(); return false; }
-    const saved = await KeyStore.get(state.user.id);
-    if (saved && saved.key && saved.created === meta.created) { Vault.key = saved.key; state.vaultReady = true; return true; }
-    state.vaultMode = "unlock"; render(); return false;
-  }
-  async function submitVault(f, m) {
-    const pw = String(f.get("pw") || "");
-    const fail = msg => { state.vaultErr = msg; state.vaultBusy = false; render(); };
-    state.vaultErr = null;
-    if (m === "setup") {
-      if (pw.length < 10) return fail("Das Tresor-Passwort braucht mindestens 10 Zeichen.");
-      if (pw !== String(f.get("pw2") || "")) return fail("Die beiden Passwörter stimmen nicht überein.");
-      if (!f.get("ok")) return fail("Bitte bestätige, dass du das Tresor-Passwort notiert hast.");
-      state.vaultBusy = true; render();
-      try {
-        await freshUser();
-        if (Vault.meta()) { state.vaultBusy = false; state.vaultMode = "unlock"; state.vaultErr = "Auf einem anderen Gerät wurde gerade schon ein Tresor eingerichtet. Entsperre ihn mit dessen Passwort."; render(); return; }
-        const meta = await Vault.create(pw);
-        const { error } = await sb.auth.updateUser({ data: { vault: meta } }); if (error) throw error;
-        await freshUser();
-        const key = await Vault.open(pw, Vault.meta());
-        await KeyStore.set(state.user.id, { key, created: meta.created });
-        Vault.key = key;
-      } catch (e) { return fail("Der Tresor ließ sich nicht einrichten. Prüfe deine Verbindung und versuch es erneut."); }
-      state.vaultBusy = false; state.vaultReady = true; render(); afterUnlock(true);
-    } else if (m === "unlock") {
-      if (!pw) return fail("Gib dein Tresor-Passwort ein.");
-      state.vaultBusy = true; render();
-      let key;
-      try { await freshUser(); key = await Vault.open(pw, Vault.meta()); }
-      catch (e) { return fail(e && e.name === "OperationError" ? "Das Tresor-Passwort ist falsch." : "Entsperren hat nicht geklappt. Prüfe deine Verbindung."); }
-      if (f.get("remember")) await KeyStore.set(state.user.id, { key, created: Vault.meta().created }).catch(() => {});
-      Vault.key = key; state.vaultBusy = false; state.vaultReady = true; render(); afterUnlock(false);
-    } else if (m === "reset") {
-      if (String(f.get("confirm") || "").trim().toUpperCase() !== "LÖSCHEN") return fail("Tippe LÖSCHEN ein, um zu bestätigen.");
-      state.vaultBusy = true; render();
-      try {
-        for (const t of TABLES) { let ids = []; try { ids = await Store.ids(t); } catch (e) { if (!isMissingTable(e)) throw e; } for (let i = 0; i < ids.length; i += 100) { const { error } = await sb.from(t).delete().in("id", ids.slice(i, i + 100)); if (error) throw error; } }
-        const files = await Img.list(); for (let i = 0; i < files.length; i += 100) await sb.storage.from(BUCKET).remove(files.slice(i, i + 100));
-        const { error } = await sb.auth.updateUser({ data: { vault: null } }); if (error) throw error;
-        await KeyStore.del(state.user.id); await freshUser();
-      } catch (e) { return fail("Zurücksetzen hat nicht vollständig geklappt. Versuch es erneut."); }
-      state.vaultBusy = false; state.vaultMode = "setup"; render(); toast("Alle Daten gelöscht. Richte jetzt einen neuen Tresor ein.");
-    }
-  }
-  // Encrypt anything still stored in plain text (data from before the vault, or written by an older app version).
-  async function encryptLeftovers(checkPhotos) {
-    if (!Vault.key || state.encrypting) return;
-    const plainTables = [...new Set(state.plainRows)];
-    let files = [];
-    if (checkPhotos) { try { files = await Img.list(); } catch (_) {} }
-    const lists = { cards: state.cards, sessions: state.sessions, items: state.items, history: state.history };
-    const rows = plainTables.flatMap(t => (lists[t] || []).map(o => [t, o]));
-    const total = rows.length + files.length; if (!total) return;
-    state.encrypting = { n: 0, total }; render();
-    const tick = () => { state.encrypting.n++; if (state.encrypting.n % 5 === 0 || state.encrypting.n === total) render(); };
-    try {
-      for (const [t, o] of rows) { await Store.put(t, o); tick(); }
-      for (const path of files) {
-        try {
-          const raw = new Uint8Array(await (await Img.raw(path)).arrayBuffer());
-          if (!isMagic(raw)) {
-            const enc = await Vault.encBlob(new Blob([raw], { type: "image/jpeg" }));
-            const { error } = await sb.storage.from(BUCKET).upload(path, enc, { contentType: "image/jpeg", upsert: true }); if (error) throw error;
-          }
-        } catch (_) {}
-        tick();
-      }
-      state.plainRows = [];
-      toast("Deine Daten sind jetzt verschlüsselt gespeichert.");
-    } catch (e) { toast("Verschlüsseln wurde unterbrochen. Es geht beim nächsten Öffnen weiter."); }
-    state.encrypting = null; render();
-  }
-  async function afterUnlock(firstSetup) {
-    try { await loadAll(); } catch (e) { toast("Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); }
-    if (state.decryptErrors) toast(`${state.decryptErrors} Einträge ließen sich nicht entschlüsseln.`);
-    render();
-    await encryptLeftovers(firstSetup || state.plainRows.length > 0);
-    maybeAutoRefresh();
-    const L = await Legacy.read();
-    state.legacy = L && ((L.cards || []).length || (L.sessions || []).length || (L.items || []).length) ? L : null;
-    render();
   }
 
   function renderAuth() {
@@ -1366,8 +1123,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.problem) { v.innerHTML = `<div class="notice"><strong>Speicher nicht verfügbar.</strong><br>${esc(state.problem)}</div>`; return; }
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
     const keyBanner = !settings.apiKey ? `<div class="banner"><span>Für die Erkennung per Foto brauchst du einen Anthropic-API-Schlüssel. Ohne Schlüssel kannst du Karten über die Suche hinzufügen.</span><button class="btn small" type="button" data-act="settings">Schlüssel eintragen</button></div>` : "";
-    const down = (state.marketDown ? `<div class="banner">${esc(state.marketDown)}</div>` : "") + legacyBanner()
-      + (state.encrypting ? `<div class="notice"><strong>Daten werden verschlüsselt:</strong> ${state.encrypting.n} von ${state.encrypting.total}. Lass die App kurz offen.</div>` : "");
+    const down = (state.marketDown ? `<div class="banner">${esc(state.marketDown)}</div>` : "") + legacyBanner();
     const scanButtons = `
       <div class="scanrow">
         <button class="btn primary" type="button" data-act="camera">${I.cam}<span>Karte scannen</span></button>
@@ -1782,17 +1538,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <p class="fine" style="margin:0">Preise: Cardmarket-Trend (Normalversion). Fehlende Karten öffnen die Cardmarket-Suche. Gezählt werden Karten mit Marktpreis-Zuordnung, unabhängig von Sprache und Variante.</p>
         </div>`;
       }
-    } else if (s.type === "vault-change") {
-      title = "Tresor-Passwort ändern";
-      body = `<form class="edit" id="vcForm" novalidate>
-        <input type="text" name="username" autocomplete="username" value="${esc((state.user && state.user.email) || "")} (Tresor)" hidden>
-        <label class="full">Aktuelles Tresor-Passwort<input class="field" id="vc-old" name="old" type="password" autocomplete="current-password" required></label>
-        <label class="full">Neues Tresor-Passwort (mind. 10 Zeichen)<input class="field" id="vc-new" name="new" type="password" autocomplete="new-password" required></label>
-        <label class="full">Neues Passwort wiederholen<input class="field" id="vc-new2" name="new2" type="password" autocomplete="new-password" required></label>
-        ${s.err ? `<div class="banner full">${esc(s.err)}</div>` : ""}
-        <button class="btn primary full" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? "Einen Moment …" : "Passwort ändern"}</button>
-        <p class="fine full" style="margin:0">Deine Daten bleiben unverändert. Andere angemeldete Geräte funktionieren weiter; neue Geräte entsperrst du dann mit dem neuen Passwort.</p>
-      </form>`;
     } else if (s.type === "settings") {
       title = "Einstellungen";
       const key = settings.apiKey;
@@ -1811,12 +1556,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <span class="fine">Während du scannst oder die App Preise lädt, wirst du nicht abgemeldet. 30 Sekunden vorher kommt eine Warnung.${settings.idle ? ` Ohne weitere Aktivität: Abmeldung um ${esc(new Date(Date.now() + settings.idle * 60e3).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} Uhr.` : ""}</span>
           <button class="btn" type="button" data-act="logout">Abmelden</button>
         </div>
-        <div class="notice stack" style="gap:8px"><strong>Tresor (Verschlüsselung)</strong>
-          <span>Inventar, Sessions, Wertverlauf und Fotos werden auf deinen Geräten mit AES-256 verschlüsselt. In der Datenbank liegt nur verschlüsselter Text${Vault.meta() && Vault.meta().created ? `, seit ${esc(dOnly(Date.parse(Vault.meta().created)))}` : ""}. Deine E-Mail-Adresse bleibt für die Anmeldung lesbar.</span>
-          <div class="actions"><button class="btn" type="button" data-act="vault-change">Tresor-Passwort ändern</button><button class="btn" type="button" data-act="vault-forget">Auf diesem Gerät sperren</button></div>
-        </div>
         <div class="notice stack" style="gap:8px"><strong>Sicherungsdatei</strong>
-          <span>Zusätzlich kannst du Inventar und Verlauf als Datei sichern (ohne Fotos). Die Datei ist <strong>nicht verschlüsselt</strong>, bewahre sie sicher auf.</span>
+          <span>Zusätzlich kannst du Inventar und Verlauf als Datei sichern (ohne Fotos).</span>
           <div class="actions"><button class="btn" type="button" data-act="export">Backup speichern</button><button class="btn" type="button" data-act="import">Backup laden</button></div>
         </div>
         <p class="fine" style="margin:0">Preisdaten: <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a> (Cardmarket, täglich aktualisiert). Pokémon und Pokémon-Kartennamen sind Marken von Nintendo, Creatures und GAME FREAK; diese App ist ein privates Fanprojekt.</p>
@@ -1834,7 +1575,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     for (const idr of ["pmin", "pmax"]) { const el = $("#" + idr); if (el) el.oninput = () => { clearTimeout(rangeTimer); rangeTimer = setTimeout(() => { if (!state.sheet) return; state.sheet[idr === "pmin" ? "min" : "max"] = parsePrice(el.value); renderSheet(); }, 450); }; }
     const ef = $("#editForm"); if (ef) ef.onsubmit = e => { e.preventDefault(); saveEdit(ef); };
     const sf = $("#searchForm"); if (sf) sf.onsubmit = e => { e.preventDefault(); runSearch(sf); };
-    const vc = $("#vcForm"); if (vc) vc.onsubmit = e => { e.preventDefault(); changeVaultPassword(new FormData(vc)); };
     const si = $("#set-idle"); if (si) si.onchange = () => { settings.idle = Number(si.value); markActive(true); toast(settings.idle ? `Automatische Abmeldung nach ${idleLabel()} ohne Aktivität.` : "Automatische Abmeldung ist aus."); };
     const st = $("#settingsForm"); if (st) st.onsubmit = e => {
       e.preventDefault();
@@ -1970,10 +1710,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
       case "logout": closeSheet(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
-      case "vault-forgot": state.vaultMode = "reset"; state.vaultErr = null; render(); break;
-      case "vault-mode": state.vaultMode = el.dataset.mode; state.vaultErr = null; render(); break;
-      case "vault-change": openSheet({ type: "vault-change" }); break;
-      case "vault-forget": closeSheet(); KeyStore.del(state.user.id).then(() => { Vault.key = null; sb.auth.signOut({ scope: "local" }).catch(() => {}); toast("Tresor auf diesem Gerät gesperrt. Beim nächsten Anmelden brauchst du das Tresor-Passwort."); }); break;
       case "open-set": openSheet({ type: "set", id, filter: "missing" }); break;
       case "set-filter": state.sheet.filter = el.dataset.f; renderSheet(); break;
       case "set-range": state.sheet.min = el.dataset.min === "" ? null : Number(el.dataset.min); state.sheet.max = el.dataset.max === "" ? null : Number(el.dataset.max); renderSheet(); break;
@@ -1996,7 +1732,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   // ---------- boot ----------
   async function loadAll() {
-    state.plainRows = []; state.decryptErrors = 0;
     const [cards, sessions, items] = await Promise.all([Store.all("cards"), Store.all("sessions"), Store.all("items")]);
     state.cards = cards; state.sessions = sessions; state.items = items;
     state.open = sessions.filter(x => x.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
@@ -2015,13 +1750,17 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.authReady = true;
     if (event === "PASSWORD_RECOVERY") { state.recovery = true; state.authErr = null; state.authMsg = null; }
     const user = session ? session.user : null;
-    if (!user) { state.user = null; state.recovery = false; state.vaultReady = false; state.vaultMode = null; Vault.key = null; clearData(); render(); return; }
-    if (state.user && state.user.id === user.id) { state.user = { ...user, user_metadata: { ...(user.user_metadata || {}), vault: Vault.meta() || (user.user_metadata || {}).vault } }; render(); return; }
+    if (!user) { state.user = null; state.recovery = false; clearData(); render(); return; }
+    if (state.user && state.user.id === user.id) { state.user = user; render(); return; }
     // App reopened after a long break: the old login is not resumed.
     if (event === "INITIAL_SESSION" && idleExpired()) { idleLogout(); return; }
     markActive(true);
     state.user = user; clearData(); state.authMsg = null; state.authErr = null; render();
-    if (await openVault()) await afterUnlock(false);
+    try { await loadAll(); } catch (e) { toast("Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); }
+    maybeAutoRefresh();
+    const L = await Legacy.read();
+    state.legacy = L && ((L.cards || []).length || (L.sessions || []).length || (L.items || []).length) ? L : null;
+    render();
   }
 
   // ---------- automatic logout after inactivity ----------
@@ -2037,7 +1776,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (force || lastActive - lastActiveSaved > 5000) { lastActiveSaved = lastActive; try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} }
   }
   const camLive = () => camOpen() && !document.hidden && stream.getTracks().some(t => t.readyState === "live");
-  const appBusy = () => camLive() || state.vaultBusy || !!state.encrypting || state.running.size > 0 || !!state.refreshing || !!state.migrating || state.busy || !!state.setPricesBusy || state.authBusy;
+  const appBusy = () => camLive() || state.running.size > 0 || !!state.refreshing || !!state.migrating || state.busy || !!state.setPricesBusy || state.authBusy;
   const idleExpired = () => { if (!settings.idle) return false; let t = lastActive; try { t = Math.max(t, Number(localStorage.getItem("ks-active")) || 0); } catch (_) {} return Date.now() - t >= settings.idle * 60e3; };
   async function idleLogout() {
     if (camOpen()) closeCamera();
@@ -2047,7 +1786,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const label = idleLabel();
     state.authMode = "login"; state.authErr = null;
     try { await sb.auth.signOut({ scope: "local" }); } catch (_) {}
-    state.user = null; state.vaultReady = false; state.vaultMode = null; Vault.key = null; clearData();
+    state.user = null; clearData();
     state.authMsg = `Du wurdest nach ${label} ohne Aktivität abgemeldet.`;
     render();
   }
