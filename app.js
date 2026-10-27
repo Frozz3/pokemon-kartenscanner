@@ -423,16 +423,19 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         patch = { status: "ok", card, error: null };
       }
     } catch (e) { patch = { status: "error", error: aiMsg(e) }; }
-    await patchItem(id, patch);
-    state.running.delete(id); setStage(id, null);
+    try { await patchItem(id, patch); } catch (_) {}
+    finally { state.running.delete(id); setStage(id, null); }
     camResult(id, patch);
   }
   async function relookupItem(id, useId) {
     const it = getItem(id); if (!it || !it.card) return;
-    state.running.add(id); await patchItem(id, { status: "pending" }); setStage(id, `${it.card.name}: Marktpreis wird gesucht …`);
-    const card = applyMarket(it.card, await lookupMarket(it.card, { useId }));
-    await patchItem(id, { status: "ok", error: null, card });
-    state.running.delete(id); setStage(id, null);
+    state.running.add(id);
+    try {
+      await patchItem(id, { status: "pending" }); setStage(id, `${it.card.name}: Marktpreis wird gesucht …`);
+      const card = applyMarket(it.card, await lookupMarket(it.card, { useId }));
+      await patchItem(id, { status: "ok", error: null, card });
+    } catch (_) {}
+    finally { state.running.delete(id); setStage(id, null); }
   }
   async function retryItem(id) {
     const it = getItem(id); if (!it || !it.imageId) return;
@@ -568,28 +571,35 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   async function refreshCard(id, opts = {}) {
     const c = state.cards.find(x => x.id === id); if (!c) return;
     if (state.sheet && state.sheet.id === id) { state.sheet.refreshing = true; renderSheet(); }
-    const res = await lookupMarket(c, { fresh: true, useId: opts.useId });
-    const cur = state.cards.find(x => x.id === id) || c;
-    await save("cards", { ...applyMarket(cur, res), id });
-    toast(res.market ? `Marktpreis: ${money(res.priceEur)} (Cardmarket-Trend)` : res.error);
-    if (state.sheet && state.sheet.id === id) { state.sheet.refreshing = false; renderSheet(); }
+    try {
+      const res = await lookupMarket(c, { fresh: true, useId: opts.useId });
+      const cur = state.cards.find(x => x.id === id) || c;
+      await save("cards", { ...applyMarket(cur, res), id });
+      toast(res.market ? `Marktpreis: ${money(res.priceEur)} (Cardmarket-Trend)` : res.error);
+    } catch (_) {}
+    finally { if (state.sheet && state.sheet.id === id) { state.sheet.refreshing = false; renderSheet(); } }
     render();
   }
   async function refreshAll(opts = {}) {
     if (state.refreshing || !state.cards.length) return;
     const cards = state.cards.slice();
     state.refreshing = { done: 0, total: cards.length, failed: 0 }; renderInv();
-    for (const c of cards) {
-      const res = await lookupMarket(c, { fresh: true });
-      const cur = state.cards.find(x => x.id === c.id); if (cur) await save("cards", { ...applyMarket(cur, res), id: c.id });
-      state.refreshing.done++; if (!res.market) state.refreshing.failed++;
-      render();
-      if (state.marketDown) break;
-      await sleep(120);
-    }
-    const { failed, total } = state.refreshing;
-    state.refreshing = null; render();
-    if (!opts.silent || state.marketDown) toast(state.marketDown || (failed ? `Preise aktualisiert. ${failed} von ${total} ohne Marktpreis.` : "Alle Preise aktualisiert."));
+    let failed = 0, saveErrors = 0; const total = cards.length;
+    try {
+      for (const c of cards) {
+        if (!state.user) break; // logged out meanwhile
+        const res = await lookupMarket(c, { fresh: true });
+        const cur = state.cards.find(x => x.id === c.id);
+        if (cur) { try { await save("cards", { ...applyMarket(cur, res), id: c.id }); } catch (_) { saveErrors++; } }
+        if (state.refreshing) state.refreshing.done++;
+        if (!res.market) failed++;
+        render();
+        if (state.marketDown || saveErrors >= 3) break;
+        await sleep(120);
+      }
+    } finally { state.refreshing = null; render(); }
+    if (saveErrors) toast("Preise konnten nicht gespeichert werden. Prüfe deine Internetverbindung.");
+    else if (!opts.silent || state.marketDown) toast(state.marketDown || (failed ? `Preise aktualisiert. ${failed} von ${total} ohne Marktpreis.` : "Alle Preise aktualisiert."));
     scheduleSnapshot();
   }
   async function testConnections() {
@@ -1543,7 +1553,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <span>Angemeldet als <strong>${esc(state.user && state.user.email)}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
           <label class="setrowlbl" for="set-idle">Automatisch abmelden nach
             <select class="field" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l} ohne Aktivität</option>`).join("").replace(">Nie ohne Aktivität<", ">Nie<")}</select></label>
-          <span class="fine">Während du scannst oder die App Preise lädt, wirst du nicht abgemeldet. 30 Sekunden vorher kommt eine Warnung.</span>
+          <span class="fine">Während du scannst oder die App Preise lädt, wirst du nicht abgemeldet. 30 Sekunden vorher kommt eine Warnung.${settings.idle ? ` Ohne weitere Aktivität: Abmeldung um ${esc(new Date(Date.now() + settings.idle * 60e3).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} Uhr.` : ""}</span>
           <button class="btn" type="button" data-act="logout">Abmelden</button>
         </div>
         <div class="notice stack" style="gap:8px"><strong>Sicherungsdatei</strong>
@@ -1765,7 +1775,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (idleWarned) { idleWarned = false; const t = $("#toast"); if (t && t.dataset.kind === "idle") t.hidden = true; }
     if (force || lastActive - lastActiveSaved > 5000) { lastActiveSaved = lastActive; try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} }
   }
-  const appBusy = () => camOpen() || state.running.size > 0 || !!state.refreshing || !!state.migrating || state.busy || !!state.setPricesBusy || state.authBusy;
+  const camLive = () => camOpen() && !document.hidden && stream.getTracks().some(t => t.readyState === "live");
+  const appBusy = () => camLive() || state.running.size > 0 || !!state.refreshing || !!state.migrating || state.busy || !!state.setPricesBusy || state.authBusy;
   const idleExpired = () => { if (!settings.idle) return false; let t = lastActive; try { t = Math.max(t, Number(localStorage.getItem("ks-active")) || 0); } catch (_) {} return Date.now() - t >= settings.idle * 60e3; };
   async function idleLogout() {
     if (camOpen()) closeCamera();
@@ -1791,7 +1802,12 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   }
   for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) document.addEventListener(ev, () => markActive(), { capture: true, passive: true });
   document.addEventListener("scroll", () => markActive(), { capture: true, passive: true });
-  document.addEventListener("visibilitychange", () => { if (document.hidden) { try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} } else idleCheck(); });
+  // Coming back to the app (unlocked phone, switched apps, restored page): decide on the stored time
+  // before anything still marked as running can count as activity.
+  function onReturn() { if (!sb || !state.user || state.recovery || !settings.idle) return; if (idleExpired()) idleLogout(); else idleCheck(); }
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} } else onReturn(); });
+  window.addEventListener("pageshow", onReturn);
+  window.addEventListener("focus", onReturn);
   setInterval(idleCheck, 5000);
 
   render();
