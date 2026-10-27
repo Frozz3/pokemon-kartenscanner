@@ -1047,15 +1047,32 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.tab === "value") renderValue();
   }
 
+  // ---------- login with a user name instead of an e-mail address ----------
+  // Supabase needs an e-mail-shaped login. The app turns the user name into a one-way hash
+  // ("u-<sha256>@kartenscanner.invalid"), so the database never contains a real address.
+  // The same formula is used in supabase/username-migration.sql.
+  const UNAME_RE = /^[a-z0-9._-]{3,32}$/;
+  const PSEUDO_DOMAIN = "kartenscanner.invalid";
+  const normUser = u => String(u || "").trim().toLowerCase();
+  async function loginIdOf(input) {
+    const u = normUser(input);
+    if (u.includes("@")) return u; // older accounts that still use an e-mail address
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("kartenscanner:" + u));
+    return "u-" + [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, "0")).join("") + "@" + PSEUDO_DOMAIN;
+  }
+  const isPseudo = email => String(email || "").endsWith("@" + PSEUDO_DOMAIN);
+  const shownUser = () => { let n = ""; try { n = localStorage.getItem("ks-username") || ""; } catch (_) {} return n || (state.user && !isPseudo(state.user.email) ? state.user.email : "dein Benutzerkonto"); };
+
   function authMsg(e) {
     const code = (e && (e.code || e.error_code)) || "", msg = String((e && e.message) || "");
-    if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "E-Mail oder Passwort ist falsch.";
-    if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) return "Bitte bestätige zuerst deine E-Mail-Adresse über den Link in deinem Postfach.";
-    if (code === "user_already_exists" || /already registered/i.test(msg)) return "Für diese E-Mail gibt es schon ein Konto. Melde dich an.";
+    if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "Benutzername oder Passwort ist falsch.";
+    if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) return "Dieses Konto ist noch nicht bestätigt. Schalte in Supabase unter Authentication → Sign In / Providers „Confirm email“ aus und lege das Konto neu an.";
+    if (code === "user_already_exists" || /already registered/i.test(msg)) return "Diesen Benutzernamen gibt es schon. Melde dich an oder wähle einen anderen.";
     if (code === "weak_password" || /password should/i.test(msg)) return "Das Passwort ist zu schwach. Nimm mindestens 8 Zeichen.";
     if (code === "same_password") return "Das neue Passwort muss sich vom alten unterscheiden.";
     if (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429)) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
     if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind für diese App deaktiviert.";
+    if (/sending.*email|confirmation email/i.test(msg)) return "Supabase will eine Bestätigungs-E-Mail schicken. Schalte unter Authentication → Sign In / Providers „Confirm email“ aus und versuch es erneut.";
     if (/fetch|network/i.test(msg)) return "Keine Verbindung zum Server. Prüfe dein Internet.";
     return msg || "Das hat nicht geklappt. Versuch es erneut.";
   }
@@ -1064,19 +1081,17 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const v = $("#view-auth");
     if (state.problem) { v.innerHTML = `<div class="notice"><strong>App noch nicht eingerichtet.</strong><br>${esc(state.problem)}</div>`; return; }
     if (!sb || !state.authReady) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
-    const m = state.recovery ? "newpw" : state.authMode;
+    const m = state.recovery ? "newpw" : (state.authMode === "reset" ? "login" : state.authMode);
     const T = {
-      login: ["Anmelden", "Melde dich an, um dein Inventar zu sehen.", "Anmelden"],
-      signup: ["Konto erstellen", "Deine Karten werden in deinem Konto gespeichert und sind auf jedem Gerät verfügbar.", "Konto erstellen"],
-      reset: ["Passwort vergessen", "Wir schicken dir einen Link, mit dem du ein neues Passwort setzt.", "Link senden"],
+      login: ["Anmelden", "Melde dich mit deinem Benutzernamen an.", "Anmelden"],
+      signup: ["Konto erstellen", "Du brauchst nur einen Benutzernamen und ein Passwort. Eine E-Mail-Adresse wird nicht gespeichert.", "Konto erstellen"],
       newpw: ["Neues Passwort", "Leg ein neues Passwort für dein Konto fest.", "Passwort speichern"],
     }[m];
-    const email = m !== "newpw" ? `<label class="full">E-Mail<input class="field" id="a-email" name="email" type="email" autocomplete="email" autocapitalize="off" spellcheck="false" required value="${esc(state.authEmail)}"></label>` : "";
-    const pw = m !== "reset" ? `<label class="full">${m === "newpw" ? "Neues Passwort (mind. 8 Zeichen)" : m === "signup" ? "Passwort (mind. 8 Zeichen)" : "Passwort"}<input class="field" id="a-pw" name="pw" type="password" autocomplete="${m === "login" ? "current-password" : "new-password"}" required></label>` : "";
+    const user = m !== "newpw" ? `<label class="full">Benutzername<input class="field" id="a-user" name="user" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(state.authEmail)}"></label>` : "";
+    const pw = `<label class="full">${m === "newpw" ? "Neues Passwort (mind. 8 Zeichen)" : m === "signup" ? "Passwort (mind. 8 Zeichen)" : "Passwort"}<input class="field" id="a-pw" name="pw" type="password" autocomplete="${m === "login" ? "current-password" : "new-password"}" required></label>`;
     const links = {
-      login: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="signup">Noch kein Konto? Registrieren</button><button class="btn ghost small" type="button" data-act="auth-mode" data-mode="reset">Passwort vergessen?</button>`,
+      login: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="signup">Noch kein Konto? Registrieren</button>`,
       signup: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="login">Schon ein Konto? Anmelden</button>`,
-      reset: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="login">Zurück zur Anmeldung</button>`,
       newpw: "",
     }[m];
     v.innerHTML = `<section class="start auth">
@@ -1085,31 +1100,34 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         ${state.authMsg ? `<div class="notice ok-box">${esc(state.authMsg)}</div>` : ""}
         ${state.authErr ? `<div class="banner">${esc(state.authErr)}</div>` : ""}
         <form class="edit" id="authForm" novalidate>
-          ${email}${pw}
+          ${user}${pw}
           <button class="btn primary full" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Einen Moment …" : T[2]}</button>
         </form>
         <div class="auth-links">${links}</div>
+        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Ohne E-Mail-Adresse gibt es keinen Link per Mail. Ein neues Passwort setzt du im Supabase-Dashboard (Anleitung in der README).</p>` : ""}
+        ${m === "signup" ? `<p class="fine" style="margin:0">Benutzername: 3–32 Zeichen, nur Kleinbuchstaben, Ziffern, Punkt, Minus und Unterstrich. Groß- und Kleinschreibung spielt keine Rolle.</p>` : ""}
       </section>`;
     $("#authForm").onsubmit = e => { e.preventDefault(); submitAuth(new FormData(e.target), m); };
   }
 
   async function submitAuth(f, m) {
-    const email = String(f.get("email") || "").trim(), pw = String(f.get("pw") || "");
-    if (m !== "newpw") state.authEmail = email;
+    const raw = String(f.get("user") || "").trim(), pw = String(f.get("pw") || "");
+    if (m !== "newpw") state.authEmail = raw;
     const fail = msg => { state.authErr = msg; state.authMsg = null; render(); };
-    if (m !== "newpw" && !/^\S+@\S+\.\S+$/.test(email)) return fail("Gib eine gültige E-Mail-Adresse ein.");
+    const u = normUser(raw);
+    if (m !== "newpw" && !u.includes("@") && !UNAME_RE.test(u)) return fail("Benutzername: 3–32 Zeichen, nur Buchstaben a–z, Ziffern, Punkt, Minus und Unterstrich.");
+    if (m === "signup" && u.includes("@")) return fail("Bitte einen Benutzernamen statt einer E-Mail-Adresse verwenden.");
     if ((m === "signup" || m === "newpw") && pw.length < 8) return fail("Das Passwort braucht mindestens 8 Zeichen.");
     if (m === "login" && !pw) return fail("Gib dein Passwort ein.");
     state.authBusy = true; state.authErr = null; state.authMsg = null; render();
     try {
       if (m === "login") {
-        const { error } = await sb.auth.signInWithPassword({ email, password: pw }); if (error) throw error;
+        const { error } = await sb.auth.signInWithPassword({ email: await loginIdOf(u), password: pw }); if (error) throw error;
+        try { localStorage.setItem("ks-username", u.includes("@") ? "" : u); } catch (_) {}
       } else if (m === "signup") {
-        const { data, error } = await sb.auth.signUp({ email, password: pw, options: { emailRedirectTo: APP_URL } }); if (error) throw error;
-        if (!data.session) { state.authMode = "login"; state.authMsg = "Fast geschafft: Wir haben dir eine E-Mail geschickt. Bestätige deine Adresse über den Link und melde dich dann hier an."; }
-      } else if (m === "reset") {
-        const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: APP_URL }); if (error) throw error;
-        state.authMode = "login"; state.authMsg = "Wenn es ein Konto mit dieser E-Mail gibt, ist der Link unterwegs. Öffne ihn auf diesem Gerät.";
+        const { data, error } = await sb.auth.signUp({ email: await loginIdOf(u), password: pw }); if (error) throw error;
+        try { localStorage.setItem("ks-username", u); } catch (_) {}
+        if (!data.session) { state.authMode = "login"; state.authErr = "Das Konto wurde angelegt, wartet aber auf eine E-Mail-Bestätigung, die nie ankommt. Schalte in Supabase „Confirm email“ aus, lösche den Nutzer und registriere dich erneut."; }
       } else if (m === "newpw") {
         const { error } = await sb.auth.updateUser({ password: pw }); if (error) throw error;
         state.recovery = false; toast("Neues Passwort gespeichert.");
@@ -1550,7 +1568,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <button class="btn danger" type="button" data-act="key-del" ${key ? "" : "disabled"}>Schlüssel löschen</button>
         </form>
         <div class="notice stack" style="gap:8px"><strong>Konto</strong>
-          <span>Angemeldet als <strong>${esc(state.user && state.user.email)}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
+          <span>Angemeldet als <strong>${esc(shownUser())}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
+          ${state.user && isPseudo(state.user.email) ? `<span class="fine ok-txt">In der Datenbank ist keine E-Mail-Adresse von dir gespeichert, nur ein Hash deines Benutzernamens.</span>` : `<span class="fine bad-txt">Dein Konto nutzt noch eine echte E-Mail-Adresse. So stellst du auf einen Benutzernamen um: README → „Auf Benutzernamen umstellen“.</span>`}
           <label class="setrowlbl" for="set-idle">Automatisch abmelden nach
             <select class="field" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l} ohne Aktivität</option>`).join("").replace(">Nie ohne Aktivität<", ">Nie<")}</select></label>
           <span class="fine">Während du scannst oder die App Preise lädt, wirst du nicht abgemeldet. 30 Sekunden vorher kommt eine Warnung.${settings.idle ? ` Ohne weitere Aktivität: Abmeldung um ${esc(new Date(Date.now() + settings.idle * 60e3).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} Uhr.` : ""}</span>
