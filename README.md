@@ -16,6 +16,7 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Set-Fortschritt:** Pro Set „47/189“ mit Fortschrittsbalken, deutsche Set- und Kartennamen mit deutschen Kartenbildern (englischer Fallback), Sets sortierbar nach Fortschritt, Wert, fehlenden Karten, Name oder Erscheinungsjahr. In der Set-Ansicht Karten nach Preis oder Nummer sortieren und nach Preisspanne filtern, mit Summe der Auswahl und Kosten zum Vervollständigen.
 - **Verlauf** aller abgeschlossenen Sessions.
 - **Konto mit Login:** E-Mail und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
+- **Ende-zu-Ende-Verschlüsselung (Tresor):** Inventar, Sessions, Wertverlauf und Fotos werden auf dem Gerät mit AES-256-GCM verschlüsselt, bevor sie in Supabase landen. Der Datenschlüssel liegt im Konto nur mit dem Tresor-Passwort verschlüsselt (PBKDF2-SHA-256, 600.000 Runden); jedes Gerät merkt sich den Schlüssel nach dem ersten Entsperren. Tresor-Passwort ändern, Gerät sperren und Zurücksetzen (löscht alle Daten) sind in den Einstellungen bzw. auf dem Entsperren-Bildschirm.
 - **Automatische Abmeldung** nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.
 - **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
 - Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
@@ -38,7 +39,7 @@ Der Schlüssel wird **nur im Browser des Geräts** gespeichert (localStorage) un
 
 ## Daten und Login (Supabase)
 
-Inventar, Sessions und Fotos liegen in einem eigenen, kostenlosen [Supabase](https://supabase.com)-Projekt. Jeder sieht nur seine eigenen Daten (Row Level Security).
+Inventar, Sessions und Fotos liegen verschlüsselt in einem eigenen, kostenlosen [Supabase](https://supabase.com)-Projekt. Jeder sieht nur seine eigenen Zeilen (Row Level Security), und selbst die sind ohne Tresor-Passwort unlesbar. Lesbar bleibt nur die E-Mail-Adresse für die Anmeldung.
 
 Einrichtung:
 
