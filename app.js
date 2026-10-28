@@ -1050,27 +1050,63 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.tab === "value") renderValue();
   }
 
-  // ---------- login with a user name instead of an e-mail address ----------
-  // Supabase needs an e-mail-shaped login. The app turns the user name into a one-way hash
-  // ("u-<sha256>@kartenscanner.invalid"), so the database never contains a real address.
-  // The same formula is used in supabase/username-migration.sql.
+  // ---------- login: e-mail and password, stored only as hashes ----------
+  // The e-mail address is turned into "e-<PBKDF2 hash>@kartenscanner.invalid" on the device; only
+  // that hash reaches Supabase, so the database never contains the real address. The password is
+  // hashed on the device as well (PBKDF2) before it is sent; Supabase then stores that value with
+  // bcrypt, so the real password never leaves the phone. Older logins (user name "u-<sha256>",
+  // real e-mail, unhashed password) keep working and are upgraded on the next successful login.
   const UNAME_RE = /^[a-z0-9._-]{3,32}$/;
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const PSEUDO_DOMAIN = "kartenscanner.invalid";
   const normUser = u => String(u || "").trim().toLowerCase();
-  async function loginIdOf(input) {
-    const u = normUser(input);
-    if (u.includes("@")) return u; // older accounts that still use an e-mail address
-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("kartenscanner:" + u));
-    return "u-" + [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, "0")).join("") + "@" + PSEUDO_DOMAIN;
+  const hex = buf => [...new Uint8Array(buf)].map(x => x.toString(16).padStart(2, "0")).join("");
+  const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  async function pbkdf2(secret, salt, rounds) {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret.normalize("NFC")), "PBKDF2", false, ["deriveBits"]);
+    return crypto.subtle.deriveBits({ name: "PBKDF2", salt: new TextEncoder().encode(salt), iterations: rounds, hash: "SHA-256" }, key, 256);
   }
   const isPseudo = email => String(email || "").endsWith("@" + PSEUDO_DOMAIN);
-  const shownUser = () => { let n = ""; try { n = localStorage.getItem("ks-username") || ""; } catch (_) {} return n || (state.user && !isPseudo(state.user.email) ? state.user.email : "dein Benutzerkonto"); };
+  const isEmailId = email => /^e-[0-9a-f]{64}@/.test(String(email || ""));
+  async function emailIdOf(email) { return "e-" + hex(await pbkdf2(normUser(email), "kartenscanner-email-v1", 200000)) + "@" + PSEUDO_DOMAIN; }
+  async function loginIdOf(input) {
+    const u = normUser(input);
+    if (u.endsWith("@" + PSEUDO_DOMAIN)) return u;
+    if (u.includes("@")) return emailIdOf(u);
+    return "u-" + hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("kartenscanner:" + u))) + "@" + PSEUDO_DOMAIN; // older user-name logins
+  }
+  async function pwHash(pw) { return "kp1." + b64url(await pbkdf2(pw, "kartenscanner-password-v1", 150000)); }
+  // Sign in with the hashed password; fall back to the older ways of signing in and upgrade them.
+  async function signIn(input, pw) {
+    const u = normUser(input), id = await loginIdOf(u), hpw = await pwHash(pw);
+    const tries = [[id, hpw, false], [id, pw, true]];
+    if (u.includes("@") && !u.endsWith("@" + PSEUDO_DOMAIN)) tries.push([u, hpw, true], [u, pw, true]); // account still stored with the real address
+    let lastErr = null;
+    for (const [email, password, upgrade] of tries) {
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if (!error) {
+        if (upgrade) {
+          const patch = { password: hpw };
+          if (email !== id && u.includes("@")) patch.email = id;
+          try { await sb.auth.updateUser(patch); } catch (_) {}
+        }
+        return;
+      }
+      lastErr = error;
+      if (!(error.code === "invalid_credentials" || /invalid login/i.test(error.message || ""))) break;
+    }
+    throw lastErr;
+  }
+  const shownUser = () => {
+    let n = ""; try { n = localStorage.getItem("ks-login") || localStorage.getItem("ks-username") || ""; } catch (_) {}
+    return n || (state.user && !isPseudo(state.user.email) ? state.user.email : "dein Konto");
+  };
 
   function authMsg(e) {
     const code = (e && (e.code || e.error_code)) || "", msg = String((e && e.message) || "");
-    if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "Benutzername oder Passwort ist falsch.";
+    if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "E-Mail oder Passwort ist falsch.";
     if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) return "Dieses Konto ist noch nicht bestätigt. Schalte in Supabase unter Authentication → Sign In / Providers „Confirm email“ aus und lege das Konto neu an.";
-    if (code === "user_already_exists" || /already registered/i.test(msg)) return "Diesen Benutzernamen gibt es schon. Melde dich an oder wähle einen anderen.";
+    if (code === "user_already_exists" || code === "email_exists" || /already registered/i.test(msg)) return "Mit dieser E-Mail gibt es schon ein Konto. Melde dich an.";
     if (code === "weak_password" || /password should/i.test(msg)) return "Das Passwort ist zu schwach. Nimm mindestens 8 Zeichen.";
     if (code === "same_password") return "Das neue Passwort muss sich vom alten unterscheiden.";
     if (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429)) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
@@ -1086,11 +1122,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (!sb || !state.authReady) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
     const m = state.recovery ? "newpw" : (state.authMode === "reset" ? "login" : state.authMode);
     const T = {
-      login: ["Anmelden", "Melde dich mit deinem Benutzernamen an.", "Anmelden"],
-      signup: ["Konto erstellen", "Du brauchst nur einen Benutzernamen und ein Passwort. Eine E-Mail-Adresse wird nicht gespeichert.", "Konto erstellen"],
+      login: ["Anmelden", "Melde dich mit deiner E-Mail-Adresse an.", "Anmelden"],
+      signup: ["Konto erstellen", "Deine E-Mail-Adresse und dein Passwort werden nur als Hash gespeichert.", "Konto erstellen"],
       newpw: ["Neues Passwort", "Leg ein neues Passwort für dein Konto fest.", "Passwort speichern"],
     }[m];
-    const user = m !== "newpw" ? `<label class="full">Benutzername<input class="field" id="a-user" name="user" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(state.authEmail)}"></label>` : "";
+    const user = m !== "newpw" ? `<label class="full">E-Mail<input class="field" id="a-user" name="user" type="email" inputmode="email" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(state.authEmail)}"></label>` : "";
     const pw = `<label class="full">${m === "newpw" ? "Neues Passwort (mind. 8 Zeichen)" : m === "signup" ? "Passwort (mind. 8 Zeichen)" : "Passwort"}<input class="field" id="a-pw" name="pw" type="password" autocomplete="${m === "login" ? "current-password" : "new-password"}" required></label>`;
     const links = {
       login: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="signup">Noch kein Konto? Registrieren</button>`,
@@ -1107,8 +1143,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <button class="btn primary full" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Einen Moment …" : T[2]}</button>
         </form>
         <div class="auth-links">${links}</div>
-        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Ohne E-Mail-Adresse gibt es keinen Link per Mail. Ein neues Passwort setzt du im Supabase-Dashboard (Anleitung in der README).</p>` : ""}
-        ${m === "signup" ? `<p class="fine" style="margin:0">Benutzername: 3–32 Zeichen, nur Kleinbuchstaben, Ziffern, Punkt, Minus und Unterstrich. Groß- und Kleinschreibung spielt keine Rolle.</p>` : ""}
+        ${m === "login" ? `<p class="fine" style="margin:0">Bisher mit Benutzernamen angemeldet? Den kannst du hier weiter eingeben. Passwort vergessen: Da deine E-Mail nicht gespeichert ist, gibt es keinen Link per Mail; ein neues Passwort setzt du im Supabase-Dashboard (README).</p>` : ""}
       </section>`;
     $("#authForm").onsubmit = e => { e.preventDefault(); submitAuth(new FormData(e.target), m); };
   }
@@ -1118,25 +1153,66 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (m !== "newpw") state.authEmail = raw;
     const fail = msg => { state.authErr = msg; state.authMsg = null; render(); };
     const u = normUser(raw);
-    if (m !== "newpw" && !u.includes("@") && !UNAME_RE.test(u)) return fail("Benutzername: 3–32 Zeichen, nur Buchstaben a–z, Ziffern, Punkt, Minus und Unterstrich.");
-    if (m === "signup" && u.includes("@")) return fail("Bitte einen Benutzernamen statt einer E-Mail-Adresse verwenden.");
+    if (m === "login" && !(EMAIL_RE.test(u) || UNAME_RE.test(u))) return fail("Gib deine E-Mail-Adresse ein.");
+    if (m === "signup" && !EMAIL_RE.test(u)) return fail("Gib eine gültige E-Mail-Adresse ein.");
     if ((m === "signup" || m === "newpw") && pw.length < 8) return fail("Das Passwort braucht mindestens 8 Zeichen.");
     if (m === "login" && !pw) return fail("Gib dein Passwort ein.");
     state.authBusy = true; state.authErr = null; state.authMsg = null; render();
     try {
       if (m === "login") {
-        const { error } = await sb.auth.signInWithPassword({ email: await loginIdOf(u), password: pw }); if (error) throw error;
-        try { localStorage.setItem("ks-username", u.includes("@") ? "" : u); } catch (_) {}
+        await signIn(u, pw);
+        try { localStorage.setItem("ks-login", u); } catch (_) {}
       } else if (m === "signup") {
-        const { data, error } = await sb.auth.signUp({ email: await loginIdOf(u), password: pw }); if (error) throw error;
-        try { localStorage.setItem("ks-username", u); } catch (_) {}
+        const { data, error } = await sb.auth.signUp({ email: await emailIdOf(u), password: await pwHash(pw) }); if (error) throw error;
+        try { localStorage.setItem("ks-login", u); } catch (_) {}
         if (!data.session) { state.authMode = "login"; state.authErr = "Das Konto wurde angelegt, wartet aber auf eine E-Mail-Bestätigung, die nie ankommt. Schalte in Supabase „Confirm email“ aus, lösche den Nutzer und registriere dich erneut."; }
       } else if (m === "newpw") {
-        const { error } = await sb.auth.updateUser({ password: pw }); if (error) throw error;
+        const { error } = await sb.auth.updateUser({ password: await pwHash(pw) }); if (error) throw error;
         state.recovery = false; toast("Neues Passwort gespeichert.");
       }
     } catch (e) { state.authErr = authMsg(e); }
     state.authBusy = false; render();
+  }
+
+  // Settings: switch the login to an e-mail address / change the password (both hashed on the device).
+  async function setLoginEmail(f) {
+    const s = state.sheet; if (!s) return;
+    const email = normUser(f.get("email")), cur = String(f.get("cur") || "");
+    const fail = msg => { s.err = msg; s.busy = false; renderSheet(); };
+    if (!EMAIL_RE.test(email)) return fail("Gib eine gültige E-Mail-Adresse ein.");
+    if (!cur) return fail("Gib zur Bestätigung dein aktuelles Passwort ein.");
+    s.busy = true; s.err = null; renderSheet();
+    try {
+      const id = await emailIdOf(email), hpw = await pwHash(cur);
+      // Confirm the current password (any of the stored forms) before changing anything.
+      let ok = false;
+      for (const pw of [hpw, cur]) { const { error } = await sb.auth.signInWithPassword({ email: state.user.email, password: pw }); if (!error) { ok = true; break; } }
+      if (!ok) return fail("Das aktuelle Passwort ist falsch.");
+      // Password first (always possible), then the login address. If Supabase refuses to change the
+      // address directly (it would want to send a confirmation mail), show SQL with only the hash.
+      { const { error } = await sb.auth.updateUser({ password: hpw }); if (error) throw error; }
+      try { localStorage.setItem("ks-login", email); } catch (_) {}
+      let changed = false;
+      try { const { data, error } = await sb.auth.updateUser({ email: id }); if (!error && data && data.user && data.user.email === id) { state.user = data.user; changed = true; } } catch (_) {}
+      if (changed) s.done = "ok"; else { s.done = "sql"; s.sql = loginSql(state.user.id, id); }
+      s.busy = false; renderSheet(); render();
+    } catch (e) { fail(authMsg(e)); }
+  }
+  const loginSql = (uid, id) => `update auth.users\n   set email = '${id}', email_confirmed_at = coalesce(email_confirmed_at, now()),\n       raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) - 'email',\n       email_change = '', email_change_token_new = '', email_change_token_current = ''\n where id = '${uid}';\nupdate auth.identities\n   set identity_data = jsonb_set(coalesce(identity_data, '{}'::jsonb), '{email}', to_jsonb('${id}'::text))\n where user_id = '${uid}';`;
+  async function changePassword(f) {
+    const s = state.sheet; if (!s) return;
+    const cur = String(f.get("cur") || ""), nw = String(f.get("new") || "");
+    const fail = msg => { s.err = msg; s.busy = false; renderSheet(); };
+    if (nw.length < 8) return fail("Das neue Passwort braucht mindestens 8 Zeichen.");
+    if (nw !== String(f.get("new2") || "")) return fail("Die neuen Passwörter stimmen nicht überein.");
+    s.busy = true; s.err = null; renderSheet();
+    try {
+      let ok = false;
+      for (const pw of [await pwHash(cur), cur]) { const { error } = await sb.auth.signInWithPassword({ email: state.user.email, password: pw }); if (!error) { ok = true; break; } }
+      if (!ok) return fail("Das aktuelle Passwort ist falsch.");
+      const { error } = await sb.auth.updateUser({ password: await pwHash(nw) }); if (error) throw error;
+      closeSheet(); toast("Passwort geändert.");
+    } catch (e) { fail(authMsg(e)); }
   }
 
   function renderScan() {
@@ -1559,6 +1635,29 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <p class="fine" style="margin:0">Preise: Cardmarket-Trend (Normalversion). Fehlende Karten öffnen die Cardmarket-Suche. Gezählt werden Karten mit Marktpreis-Zuordnung, unabhängig von Sprache und Variante.</p>
         </div>`;
       }
+    } else if (s.type === "login-email") {
+      title = "Anmelde-E-Mail";
+      if (s.done === "ok") body = `<div class="stack"><div class="notice ok-box">Erledigt. Du meldest dich ab jetzt mit <strong>${esc(shownUser())}</strong> an. In der Datenbank steht nur der Hash.</div><button class="btn primary block" type="button" data-act="close">Fertig</button></div>`;
+      else if (s.done === "sql") body = `<div class="stack"><div class="notice">Supabase verlangt für E-Mail-Änderungen eine Bestätigungs-Mail, die an die Hash-Adresse nie ankommt. Führ diese zwei Befehle einmal im Supabase <strong>SQL Editor</strong> aus. Sie enthalten nur den Hash, nicht deine E-Mail.</div>
+          <pre class="sqlbox" id="sqlbox">${esc(s.sql)}</pre><button class="btn" type="button" data-act="copy-sql">SQL kopieren</button>
+          <p class="fine" style="margin:0">Dein Passwort ist bereits umgestellt. Nach dem SQL meldest du dich mit deiner E-Mail und demselben Passwort an.</p></div>`;
+      else body = `<form class="edit" id="leForm" novalidate>
+          <p class="fine full" style="margin:0">Die App speichert deine E-Mail nicht. Sie bildet daraus auf diesem Gerät einen Hash, und nur der steht in der Datenbank. Ein Passwort-Reset per Mail ist deshalb nicht möglich.</p>
+          <label class="full">E-Mail-Adresse<input class="field" id="le-email" name="email" type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+          <label class="full">Aktuelles Passwort<input class="field" id="le-cur" name="cur" type="password" autocomplete="current-password" required></label>
+          ${s.err ? `<div class="banner full">${esc(s.err)}</div>` : ""}
+          <button class="btn primary full" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? "Einen Moment …" : "Umstellen"}</button>
+        </form>`;
+    } else if (s.type === "pw-change") {
+      title = "Passwort ändern";
+      body = `<form class="edit" id="pwForm" novalidate>
+          <input type="email" name="username" autocomplete="username" value="${esc(shownUser())}" hidden>
+          <label class="full">Aktuelles Passwort<input class="field" id="pw-cur" name="cur" type="password" autocomplete="current-password" required></label>
+          <label class="full">Neues Passwort (mind. 8 Zeichen)<input class="field" id="pw-new" name="new" type="password" autocomplete="new-password" required></label>
+          <label class="full">Neues Passwort wiederholen<input class="field" id="pw-new2" name="new2" type="password" autocomplete="new-password" required></label>
+          ${s.err ? `<div class="banner full">${esc(s.err)}</div>` : ""}
+          <button class="btn primary full" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? "Einen Moment …" : "Passwort ändern"}</button>
+        </form>`;
     } else if (s.type === "settings") {
       title = "Einstellungen";
       const key = settings.apiKey;
@@ -1576,7 +1675,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         </form>
         <div class="notice stack" style="gap:8px"><strong>Konto</strong>
           <span>Angemeldet als <strong>${esc(shownUser())}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
-          ${state.user && isPseudo(state.user.email) ? `<span class="fine ok-txt">In der Datenbank ist keine E-Mail-Adresse von dir gespeichert, nur ein Hash deines Benutzernamens.</span>` : `<span class="fine bad-txt">Dein Konto nutzt noch eine echte E-Mail-Adresse. So stellst du auf einen Benutzernamen um: README → „Auf Benutzernamen umstellen“.</span>`}
+          ${state.user && isEmailId(state.user.email) ? `<span class="fine ok-txt">Anmeldung per E-Mail. In der Datenbank stehen deine E-Mail-Adresse und dein Passwort nur als Hash.</span>` : state.user && isPseudo(state.user.email) ? `<span class="fine">Du meldest dich noch mit Benutzernamen an. Stell auf deine E-Mail um; sie wird nur als Hash gespeichert.</span>` : `<span class="fine bad-txt">In der Datenbank steht noch deine echte E-Mail-Adresse. Stell die Anmeldung um, dann wird sie durch einen Hash ersetzt.</span>`}
+          <div class="actions"><button class="btn" type="button" data-act="login-email">${state.user && isEmailId(state.user.email) ? "E-Mail ändern" : "E-Mail-Anmeldung einrichten"}</button><button class="btn" type="button" data-act="pw-change">Passwort ändern</button></div>
           <label class="setrowlbl" for="set-idle">Automatisch abmelden nach
             <select class="field" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l} ohne Aktivität</option>`).join("").replace(">Nie ohne Aktivität<", ">Nie<")}</select></label>
           <span class="fine">Während du scannst oder die App Preise lädt, wirst du nicht abgemeldet. 30 Sekunden vorher kommt eine Warnung.${settings.idle ? ` Ohne weitere Aktivität: Abmeldung um ${esc(new Date(Date.now() + settings.idle * 60e3).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} Uhr.` : ""}</span>
@@ -1601,6 +1701,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     for (const idr of ["pmin", "pmax"]) { const el = $("#" + idr); if (el) el.oninput = () => { clearTimeout(rangeTimer); rangeTimer = setTimeout(() => { if (!state.sheet) return; state.sheet[idr === "pmin" ? "min" : "max"] = parsePrice(el.value); renderSheet(); }, 450); }; }
     const ef = $("#editForm"); if (ef) ef.onsubmit = e => { e.preventDefault(); saveEdit(ef); };
     const sf = $("#searchForm"); if (sf) sf.onsubmit = e => { e.preventDefault(); runSearch(sf); };
+    const lf = $("#leForm"); if (lf) lf.onsubmit = e => { e.preventDefault(); setLoginEmail(new FormData(lf)); };
+    const pf = $("#pwForm"); if (pf) pf.onsubmit = e => { e.preventDefault(); changePassword(new FormData(pf)); };
     const si = $("#set-idle"); if (si) si.onchange = () => { settings.idle = Number(si.value); markActive(true); toast(settings.idle ? `Automatische Abmeldung nach ${idleLabel()} ohne Aktivität.` : "Automatische Abmeldung ist aus."); };
     const st = $("#settingsForm"); if (st) st.onsubmit = e => {
       e.preventDefault();
@@ -1738,6 +1840,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "migrate": migrateLegacy(); break;
       case "theme-toggle": setTheme(isDark() ? "light" : "dark"); break;
       case "theme-set": setTheme(el.dataset.theme); break;
+      case "login-email": openSheet({ type: "login-email" }); break;
+      case "pw-change": openSheet({ type: "pw-change" }); break;
+      case "copy-sql": { const t = state.sheet && state.sheet.sql; if (t && navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast("SQL kopiert."), () => toast("Kopieren ging nicht. Markiere den Text und kopier ihn von Hand.")); break; }
       case "open-set": openSheet({ type: "set", id, filter: "missing" }); break;
       case "set-filter": state.sheet.filter = el.dataset.f; renderSheet(); break;
       case "set-range": state.sheet.min = el.dataset.min === "" ? null : Number(el.dataset.min); state.sheet.max = el.dataset.max === "" ? null : Number(el.dataset.max); renderSheet(); break;

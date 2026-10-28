@@ -337,6 +337,8 @@ form.edit label { display: flex; flex-direction: column; gap: 6px; font-size: 13
 form.edit .full { grid-column: 1 / -1; }
 form.edit .field { color: var(--ink); font-weight: 400; }
 
+.sqlbox { margin: 0; padding: 12px; background: var(--surface); border-radius: 10px; font: 12px/1.45 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+
 /* Search results */
 .result { display: grid; grid-template-columns: 48px minmax(0,1fr) auto; gap: 12px; align-items: center; background: var(--surface); border: 0; padding: 10px 16px; cursor: pointer; text-align: left; width: 100%; color: var(--ink); }
 .result .mini { width: 48px; }
