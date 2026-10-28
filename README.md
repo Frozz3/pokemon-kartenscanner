@@ -18,7 +18,8 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Konto mit Login:** E-Mail und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. **E-Mail und Passwort werden auf dem Gerät gehasht** (PBKDF2-SHA-256); in der Datenbank steht nur `e-<hash>@kartenscanner.invalid`, und Supabase speichert den Passwort-Hash zusätzlich mit bcrypt. Das echte Passwort verlässt nie das Gerät. Ältere Logins (Benutzername, unverhashtes Passwort) funktionieren weiter und werden beim Anmelden automatisch umgestellt. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
 - **Automatische Abmeldung** nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.
 - **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
-- **Design im iOS-Stil** mit Systemschrift, großen Titeln, gruppierten Listen und durchscheinender Tab-Leiste; **Hell, Dunkel oder Automatisch** (Schalter oben rechts und in den Einstellungen).
+- **Design im iOS-Stil** mit Systemschrift, großen Titeln, die beim Scrollen in die Leiste wandern, gruppierten Listen und Einstellungen wie in der Einstellungen-App (mit Schaltern für Auto-Auslöser und Ton); **Hell, Dunkel oder Automatisch** (Schalter oben rechts und in den Einstellungen).
+- **Bewegung wie auf dem iPhone:** Fenster gleiten von unten herein und lassen sich nach unten wegwischen, Knöpfe federn beim Tippen, Seitenwechsel blenden weich über. Am Ende einer Session zählt der Endbetrag hoch, landet mit Kassen-Sound und einem Münzregen. Eigener Startbildschirm (hell und dunkel) für alle aktuellen iPhones. Wer in iOS „Bewegung reduzieren“ eingeschaltet hat, bekommt keine Animationen.
 - **Schnell:** Die App merkt sich deine Daten auf dem Gerät und zeigt sie sofort beim Start, auch ohne Verbindung. Danach lädt sie nur, was sich seit dem letzten Mal geändert hat (einmal am Tag zur Sicherheit alles). Sessions werden gebündelt gespeichert, Preise parallel aktualisiert; gleiche Karten werden dabei nur einmal abgefragt.
 - Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
 
@@ -85,7 +86,7 @@ Reines HTML, CSS und JavaScript ohne Build-Schritt:
 | `supabase/username-migration.sql` | Ältere Variante: Konto auf Benutzernamen umstellen (nicht mehr nötig) |
 | `vendor/supabase.js` | Supabase-Client 2.117.3 (MIT-Lizenz) |
 | `sw.js` | Service Worker für Offline-Start |
-| `manifest.webmanifest`, `icons/` | PWA-Angaben und App-Icons |
+| `manifest.webmanifest`, `icons/` | PWA-Angaben, App-Icons und Startbilder (`icons/splash/`) |
 
 GitHub Pages: Settings → Pages → Source „Deploy from a branch“, Branch `main`, Ordner `/ (root)`.
 

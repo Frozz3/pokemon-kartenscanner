@@ -785,7 +785,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     }
     return out;
   }
-  const dupChips = d => !d ? "" : (d.ses ? '<span class="chip warn">Doppelt gescannt</span>' : "") + (d.inv ? `<span class="chip own">Schon ${d.inv}× im Inventar</span>` : "");
+  const dupChips = d => !d ? "" : (d.ses ? '<span class="chip warn">Doppelt gescannt</span>' : "") + (d.inv ? `<span class="chip own">${d.inv}× im Inventar</span>` : "");
 
   // ---------- value history ----------
   const dayId = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -1131,10 +1131,21 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   const thumbOf = (thumb, card) => thumb || officialImg(card, "low");
 
   const TAB_TITLES = { scan: "Scannen", inv: "Inventar", sets: "Sets", value: "Wert", hist: "Verlauf" };
+  let shownTab = null;
+  const calm = () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  // Launch screen: stays until the first real content is on screen (at least briefly, so it doesn't flicker).
+  let splashGone = false;
+  function hideSplash() {
+    if (splashGone) return; splashGone = true;
+    const sp = $("#splash"); if (!sp) return;
+    setTimeout(() => { sp.classList.add("out"); setTimeout(() => sp.remove(), 500); }, Math.max(0, 350 - performance.now()));
+  }
+  setTimeout(hideSplash, 3000);
   function render() {
     const authed = !!state.user && !state.recovery;
     $("#view-auth").hidden = authed; $("#nav").hidden = !authed; $("#topRight").hidden = !authed; $("#subtitle").hidden = !authed;
-    $("#pageTitle").textContent = authed ? (TAB_TITLES[state.tab] || "Kartenscanner") : "Kartenscanner";
+    $("#pageTitle").textContent = $("#miniTitle").textContent = authed ? (TAB_TITLES[state.tab] || "Kartenscanner") : "Kartenscanner";
+    if (state.problem || (state.authReady && (!state.user || state.loaded))) hideSplash();
     if (!authed) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
     document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("#navDot").innerHTML = state.open && state.tab !== "scan" ? '<span class="dot" title="Offene Session"></span>' : "";
@@ -1144,6 +1155,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     $("#view-sets").hidden = state.tab !== "sets";
     $("#view-value").hidden = state.tab !== "value";
     $("#worth").textContent = state.loaded ? money(state.cards.reduce((s, c) => s + (num(c.priceEur) || 0) * (c.qty || 1), 0)) : "–";
+    if (state.tab !== shownTab) { shownTab = state.tab; const v = $("#view-" + state.tab); v.classList.remove("view-in"); void v.offsetWidth; v.classList.add("view-in"); }
     if (state.tab === "scan") renderScan();
     if (state.tab === "inv") renderInv();
     if (state.tab === "hist") renderHist();
@@ -1244,7 +1256,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <button class="btn primary full" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Einen Moment …" : T[2]}</button>
         </form>
         <div class="auth-links">${links}</div>
-        ${m === "login" ? `<p class="fine" style="margin:0">Bisher mit Benutzernamen angemeldet? Den kannst du hier weiter eingeben. Passwort vergessen: Da deine E-Mail nicht gespeichert ist, gibt es keinen Link per Mail; ein neues Passwort setzt du im Supabase-Dashboard (README).</p>` : ""}
+        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Ein neues setzt du im Supabase-Dashboard (siehe README).</p>` : ""}
       </section>`;
     $("#authForm").onsubmit = e => { e.preventDefault(); submitAuth(new FormData(e.target), m); };
   }
@@ -1394,7 +1406,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const noMarket = c.priceSource !== "markt" && c.priceSource !== "hand";
     return `<li class="row" data-act="edit-item" data-id="${esc(it.id)}" tabindex="0" role="button" aria-label="${esc(c.name)} bearbeiten">${mini}
       <div style="min-width:0"><div class="nm">${esc(c.name)}</div><div class="sub">${subLine(c)}</div>
-      <div class="chips">${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ""}${c.variant && c.variant !== "Normal" ? `<span class="chip">${esc(c.variant)}</span>` : ""}<span class="chip">${esc(c.condition || "NM")}</span>${lowConf ? '<span class="chip warn">unsicher – prüfen</span>' : ""}${c.market && c.market.ambiguous ? '<span class="chip warn">Set prüfen</span>' : ""}${dupChips(state.dupView && state.dupView.get(it.id))}</div>
+      <div class="chips">${dupChips(state.dupView && state.dupView.get(it.id))}${lowConf ? '<span class="chip warn">unsicher – prüfen</span>' : ""}${c.market && c.market.ambiguous ? '<span class="chip warn">Set prüfen</span>' : ""}${c.condition && c.condition !== "NM" ? `<span class="chip">${esc(c.condition)}</span>` : ""}${c.variant && c.variant !== "Normal" ? `<span class="chip">${esc(c.variant)}</span>` : ""}${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ""}</div>
       ${noMarket && c.marketError ? `<div class="erractions"><span class="fine">${esc(c.marketError)}</span><button class="btn small" type="button" data-act="search-item" data-id="${esc(it.id)}">Karte suchen</button></div>` : ""}</div>
       <div class="px">${money(num(c.priceEur) === null ? null : c.priceEur * (it.qty || 1))}<small>${(it.qty || 1) > 1 ? `${it.qty} × ${money(c.priceEur)}` : esc(srcLabel(c))}</small></div></li>`;
   }
@@ -1534,7 +1546,62 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   // ---------- sheets ----------
   function openSheet(s) { state.sheet = s; renderSheet(); }
-  function closeSheet() { state.sheet = null; const r = $("#sheetRoot"); r.innerHTML = ""; r.dataset.key = ""; document.body.style.overflow = ""; }
+  function closeSheet() {
+    state.sheet = null; sheetDrag = null;
+    const r = $("#sheetRoot"); r.dataset.key = ""; document.body.style.overflow = "";
+    const sc = r.querySelector(".scrim:not(.leaving)");
+    r.querySelectorAll(".scrim.leaving").forEach(x => x.remove());
+    if (!sc || calm()) { r.innerHTML = ""; return; }
+    // Slide the sheet down (from wherever a drag left it) and fade the dimming, then remove it.
+    const sh = sc.querySelector(".sheet");
+    if (sh) { const m = /translateY\(([-\d.]+)px\)/.exec(sh.style.transform || ""); sh.style.setProperty("--drag", (m ? m[1] : 0) + "px"); sh.removeAttribute("role"); }
+    // The leaving copy is only a picture: no ids or actions, so nothing can find or trigger it.
+    sc.removeAttribute("data-act"); sc.inert = true; sc.querySelectorAll("[id], [data-act]").forEach(e => { e.removeAttribute("id"); e.removeAttribute("data-act"); });
+    sc.style.backgroundColor = ""; sc.classList.remove("still"); sc.classList.add("leaving");
+    setTimeout(() => sc.remove(), 340);
+  }
+
+  // Drag a sheet down to close it, from the grabber/title or from anywhere while its content is scrolled to the top.
+  let sheetDrag = null;
+  function sheetDragStart(x, y, target, mouse) {
+    const sh = target && target.closest && target.closest("#sheetRoot .sheet");
+    if (!sh || sh.closest(".leaving") || calm()) return;
+    const head = !!target.closest(".sheet-head");
+    if (!head && (mouse || sh.scrollTop > 0 || target.closest("input, select, textarea"))) return;
+    const sc = sh.parentElement, bg = getComputedStyle(sc).backgroundColor, a = /rgba?\([^)]*,\s*([\d.]+)\)/.exec(bg);
+    sheetDrag = { sh, sc, head, x0: x, y0: y, off: 0, on: false, v: 0, ly: y, lt: performance.now(), alpha: a ? Number(a[1]) : 0.35 };
+  }
+  function sheetDragMove(x, y, ev) {
+    const d = sheetDrag; if (!d) return;
+    const dy = y - d.y0, dx = x - d.x0;
+    if (!d.on) {
+      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) { sheetDrag = null; return; }
+      if (dy < -4) { sheetDrag = null; return; }
+      if (dy < 7) return;
+      if (!d.head && d.sh.scrollTop > 0) { sheetDrag = null; return; }
+      d.on = true; d.sh.classList.remove("snap"); d.sh.classList.add("dragging"); d.y0 = y - 1;
+    }
+    if (ev && ev.cancelable) ev.preventDefault();
+    const raw = y - d.y0; d.off = raw > 0 ? raw : raw / 4;
+    const now = performance.now(); d.v = (y - d.ly) / Math.max(1, now - d.lt); d.ly = y; d.lt = now;
+    d.sh.style.transform = `translateY(${d.off}px)`;
+    const k = Math.max(0, Math.min(1, d.off / Math.max(1, d.sh.offsetHeight)));
+    d.sc.style.backgroundColor = `rgba(0,0,0,${(d.alpha * (1 - k)).toFixed(3)})`;
+  }
+  function sheetDragEnd() {
+    const d = sheetDrag; sheetDrag = null; if (!d || !d.on) return;
+    d.sh.classList.remove("dragging");
+    if (d.off > Math.min(140, d.sh.offsetHeight * 0.3) || (d.v > 0.6 && d.off > 24)) { closeSheet(); return; }
+    d.sh.classList.add("snap"); d.sh.style.transform = ""; d.sc.style.backgroundColor = "";
+    setTimeout(() => d.sh.classList.remove("snap"), 460);
+  }
+  document.addEventListener("touchstart", e => { if (e.touches.length === 1) sheetDragStart(e.touches[0].clientX, e.touches[0].clientY, e.target, false); else sheetDrag = null; }, { passive: true });
+  document.addEventListener("touchmove", e => { if (sheetDrag && e.touches.length === 1) sheetDragMove(e.touches[0].clientX, e.touches[0].clientY, e); }, { passive: false });
+  document.addEventListener("touchend", sheetDragEnd, { passive: true });
+  document.addEventListener("touchcancel", sheetDragEnd, { passive: true });
+  document.addEventListener("pointerdown", e => { if (e.pointerType === "mouse") sheetDragStart(e.clientX, e.clientY, e.target, true); });
+  document.addEventListener("pointermove", e => { if (e.pointerType === "mouse" && sheetDrag) sheetDragMove(e.clientX, e.clientY, e); });
+  document.addEventListener("pointerup", e => { if (e.pointerType === "mouse") sheetDragEnd(); });
 
   function marketBox(c, s) {
     const m = c.market;
@@ -1554,6 +1621,30 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       inner += `<div class="spark"><div><div class="k">Preisverlauf seit ${esc(dOnly(hist[0].x))}</div><div class="v ${deltaCls(dv)}">${signed(dv)}${pct(dv, hist[0].y)}</div></div>${lineChart(hist, { w: 140, h: 40, compact: true, label: "Preisverlauf" })}</div>`;
     }
     return `<div class="pricebox">${inner}<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" type="button" data-act="refresh-card" data-id="${esc(c.id)}" ${s.refreshing ? "disabled" : ""}>${s.refreshing ? "Rufe Preis ab …" : "Marktpreis aktualisieren"}</button><button class="btn small" type="button" data-act="search-card" data-id="${esc(c.id)}">Andere Karte zuordnen</button></div></div>`;
+  }
+
+  // Session total counts up, then lands with a little bounce, the cash sound and a burst of coins.
+  function playDone(s) {
+    if (s.played) return; s.played = true;
+    const el = $("#sheetRoot .scrim:not(.leaving) .endbetrag .big"); if (!el || calm() || !(s.total > 0)) return;
+    const dur = Math.min(1700, 700 + (s.count || 1) * 45), t0 = performance.now();
+    el.classList.add("counting");
+    const step = now => {
+      if (!el.isConnected) return;
+      const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = money(s.total * e);
+      if (k < 1) { requestAnimationFrame(step); return; }
+      el.textContent = money(s.total); el.classList.remove("counting"); el.classList.add("landed");
+      cashSound(true);
+      const box = el.parentElement.querySelector(".coins"); if (!box) return;
+      const n = Math.min(26, 12 + Math.round(Math.log10(1 + s.total) * 5));
+      box.innerHTML = Array.from({ length: n }, (_, i) => {
+        const x = Math.round((Math.random() * 2 - 1) * 170), h = -Math.round(60 + Math.random() * 100), r = Math.round((Math.random() * 2 - 1) * 540);
+        return `<i style="--x:${x}px;--h:${h}px;--r:${r}deg;--d:${Math.round(i * 22 + Math.random() * 60)}ms"><b></b></i>`;
+      }).join("");
+      setTimeout(() => { if (box.isConnected) box.innerHTML = ""; }, 2400);
+    };
+    requestAnimationFrame(step);
   }
 
   let rangeTimer;
@@ -1577,7 +1668,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     } else if (s.type === "done") {
       title = "Session abgeschlossen";
       body = `<div class="stack">
-        <div class="endbetrag"><div class="eyebrow">Endbetrag</div><div class="big">${money(s.total)}</div><div>${s.count} Karte${s.count === 1 ? "" : "n"} übernommen</div></div>
+        <div class="endbetrag"><div class="coins" aria-hidden="true"></div><div class="eyebrow">Endbetrag</div><div class="big mono" aria-label="${esc(money(s.total))}">${money(s.played || calm() || !(s.total > 0) ? s.total : 0)}</div><div>${s.count} Karte${s.count === 1 ? "" : "n"} übernommen</div></div>
         <p class="muted" style="margin:0">${s.added} neu im Inventar${s.merged ? `, ${s.merged} zu vorhandenen Karten dazugezählt` : ""}.</p>
         <div class="actions"><button class="btn" type="button" data-act="close">Neue Session</button><button class="btn primary" type="button" data-act="goinv">Inventar ansehen</button></div>
       </div>`;
@@ -1761,43 +1852,54 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         </form>`;
     } else if (s.type === "settings") {
       title = "Einstellungen";
-      const key = settings.apiKey;
-      body = `<div class="stack">
-        <div class="notice stack" style="gap:10px"><strong>Darstellung</strong>
-          <div class="seg" role="group" aria-label="Darstellung">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button type="button" data-act="theme-set" data-theme="${k}" aria-pressed="${settings.theme === k}">${l}</button>`).join("")}</div>
-          <span class="fine">„Automatisch“ folgt der Einstellung deines iPhones.</span>
-        </div>
-        <form class="edit" id="settingsForm">
-          <label class="full">Anthropic-API-Schlüssel<input class="field mono" id="set-key" name="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${key ? "gespeichert – zum Ändern neu eingeben" : "sk-ant-…"}"></label>
-          <label class="full">Modell für die Erkennung<select class="field" id="set-model" name="model">${MODELS.map(([v, l]) => `<option value="${v}" ${v === settings.model ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-          <p class="fine full" style="margin:0">Der Schlüssel wird nur im Browser dieses Geräts gespeichert, nicht in deinem Konto, und direkt an api.anthropic.com geschickt. Jeder Scan verbraucht API-Guthaben. Einen Schlüssel erstellst du in der <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a>. Tipp: Leg dort ein Ausgabelimit fest.</p>
-          <button class="btn primary" type="submit">Speichern</button>
-          <button class="btn danger" type="button" data-act="key-del" ${key ? "" : "disabled"}>Entfernen</button>
-        </form>
-        <div class="notice stack" style="gap:8px"><strong>Konto</strong>
-          <span>Angemeldet als <strong>${esc(shownUser())}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
-          ${state.user && isEmailId(state.user.email) ? `<span class="fine ok-txt">Anmeldung per E-Mail. In der Datenbank stehen deine E-Mail-Adresse und dein Passwort nur als Hash.</span>` : state.user && isPseudo(state.user.email) ? `<span class="fine">Du meldest dich noch mit Benutzernamen an. Stell auf deine E-Mail um; sie wird nur als Hash gespeichert.</span>` : `<span class="fine bad-txt">In der Datenbank steht noch deine echte E-Mail-Adresse. Stell die Anmeldung um, dann wird sie durch einen Hash ersetzt.</span>`}
-          <div class="actions"><button class="btn" type="button" data-act="login-email">${state.user && isEmailId(state.user.email) ? "E-Mail ändern" : "E-Mail-Anmeldung einrichten"}</button><button class="btn" type="button" data-act="pw-change">Passwort ändern</button></div>
-          <label class="setrowlbl" for="set-idle">Automatisch abmelden nach
-            <select class="field" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l} ohne Aktivität</option>`).join("").replace(">Nie ohne Aktivität<", ">Nie<")}</select></label>
-          <span class="fine">Während du scannst oder die App Preise lädt, wirst du nicht abgemeldet. 30 Sekunden vorher kommt eine Warnung.${settings.idle ? ` Ohne weitere Aktivität: Abmeldung um ${esc(new Date(Date.now() + settings.idle * 60e3).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} Uhr.` : ""}</span>
-          <button class="btn" type="button" data-act="logout">Abmelden</button>
-        </div>
-        <div class="notice stack" style="gap:8px"><strong>Sicherungsdatei</strong>
-          <span>Zusätzlich kannst du Inventar und Verlauf als Datei sichern (ohne Fotos).</span>
-          <div class="actions"><button class="btn" type="button" data-act="export">Backup speichern</button><button class="btn" type="button" data-act="import">Backup laden</button></div>
-        </div>
-        <p class="fine" style="margin:0">Preisdaten: <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a> (Cardmarket, täglich aktualisiert). Pokémon und Pokémon-Kartennamen sind Marken von Nintendo, Creatures und GAME FREAK; diese App ist ein privates Fanprojekt.</p>
+      const key = settings.apiKey, u = state.user;
+      const sw = (act, on, label) => `<button class="cell" type="button" role="switch" aria-checked="${on}" data-act="${act}"><span>${label}</span><span class="switch" aria-hidden="true"></span></button>`;
+      const link = (act, label, val) => `<button class="cell link" type="button" data-act="${act}"><span>${label}</span><span class="tail">${val ? `<span class="val">${esc(val)}</span>` : ""}<span class="chev"></span></span></button>`;
+      const loginNote = u && isEmailId(u.email) ? "Anmeldung per E-Mail. In der Datenbank stehen E-Mail-Adresse und Passwort nur als Hash."
+        : u && isPseudo(u.email) ? "Du meldest dich noch mit Benutzernamen an. Stell auf E-Mail um; sie wird nur als Hash gespeichert."
+        : `<span class="bad-txt">In der Datenbank steht noch deine echte E-Mail-Adresse. Stell die Anmeldung um, dann wird sie durch einen Hash ersetzt.</span>`;
+      const idleNote = settings.idle ? ` Ohne weitere Aktivität: Abmeldung um ${esc(new Date(Date.now() + settings.idle * 60e3).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} Uhr.` : "";
+      body = `<div class="stack settings">
+        <section><h3 class="gh">Darstellung</h3>
+          <div class="group pad"><div class="seg" role="group" aria-label="Darstellung">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button type="button" data-act="theme-set" data-theme="${k}" aria-pressed="${settings.theme === k}">${l}</button>`).join("")}</div></div>
+          <p class="gf">„Automatisch“ folgt der Einstellung deines iPhones.</p></section>
+        <section><h3 class="gh">Kamera</h3>
+          <div class="group">${sw("set-auto", settings.auto, "Automatisch auslösen")}${sw("set-sound", settings.sound, "Kassen-Sound")}</div>
+          <p class="gf">Die Kamera löst aus, sobald eine Karte ruhig im Rahmen liegt. Bei stummgeschaltetem iPhone gibt es keinen Ton.</p></section>
+        <section><h3 class="gh">Erkennung per KI</h3>
+          <form class="group" id="settingsForm">
+            <label class="cell"><span>API-Schlüssel</span><input class="cell-input mono" id="set-key" name="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${key ? "gespeichert" : "sk-ant-…"}"></label>
+            <label class="cell"><span>Modell</span><select class="cell-select" id="set-model" name="model">${MODELS.map(([v, l]) => `<option value="${v}" ${v === settings.model ? "selected" : ""}>${l.replace(/ \(.*\)$/, "")}</option>`).join("")}</select></label>
+            <button class="cell action" type="submit">Schlüssel speichern</button>
+            ${key ? `<button class="cell action danger" type="button" data-act="key-del">Schlüssel entfernen</button>` : ""}
+          </form>
+          <p class="gf">Der Schlüssel bleibt nur auf diesem Gerät und geht direkt an api.anthropic.com. Jeder Scan kostet etwas API-Guthaben; Sonnet ist genauer, Haiku günstiger. Schlüssel gibt es in der <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a>, dort am besten ein Ausgabelimit setzen.</p></section>
+        <section><h3 class="gh">Konto</h3>
+          <div class="group">
+            <div class="cell"><span>Angemeldet als</span><span class="val">${esc(shownUser())}</span></div>
+            ${link("login-email", u && isEmailId(u.email) ? "E-Mail ändern" : "E-Mail-Anmeldung einrichten")}
+            ${link("pw-change", "Passwort ändern")}
+            <label class="cell"><span>Automatisch abmelden</span><select class="cell-select" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          </div>
+          <p class="gf">${loginNote} Während du scannst oder Preise geladen werden, wirst du nicht abgemeldet; 30 Sekunden vorher kommt eine Warnung.${idleNote}</p></section>
+        <section><h3 class="gh">Sicherung</h3>
+          <div class="group">${link("export", "Backup speichern")}${link("import", "Backup laden")}</div>
+          <p class="gf">Inventar und Verlauf als Datei, ohne Fotos. Deine Daten liegen ohnehin dauerhaft in deinem Konto.</p></section>
+        <div class="group"><button class="cell action danger center" type="button" data-act="logout">Abmelden</button></div>
+        <p class="fine legal">Preisdaten: <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a> (Cardmarket, täglich aktualisiert). Pokémon und Pokémon-Kartennamen sind Marken von Nintendo, Creatures und GAME FREAK; diese App ist ein privates Fanprojekt.</p>
       </div>`;
     }
-    const prevSheet = root.querySelector(".sheet"), sheetKey = s.type + ":" + (s.id || "");
+    const prevSheet = root.querySelector(".scrim:not(.leaving) .sheet"), sheetKey = s.type + ":" + (s.id || "");
+    const same = !!prevSheet && root.dataset.key === sheetKey;
     const keepScroll = prevSheet && root.dataset.key === sheetKey ? prevSheet.scrollTop : 0;
     const focused = document.activeElement && root.contains(document.activeElement) && document.activeElement.id ? document.activeElement.id : null;
-    root.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+    root.innerHTML = `<div class="scrim${same ? " still" : ""}" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="sheet-head"><h2>${esc(title)}</h2><button class="x" type="button" data-act="close" aria-label="Schließen">×</button></div>${body}</div></div>`;
     root.dataset.key = sheetKey;
     if (keepScroll) root.querySelector(".sheet").scrollTop = keepScroll;
     if (focused && (focused === "pmin" || focused === "pmax")) { const el = $("#" + focused); if (el) { el.focus(); const n = el.value.length; try { el.setSelectionRange(n, n); } catch (_) {} } }
+    if (s.type === "done") playDone(s);
+    const sm = $("#set-model"); if (sm) sm.onchange = () => { settings.model = sm.value; toast("Modell gespeichert."); };
     const cs = $("#cardSort"); if (cs) cs.onchange = () => { settings.cardSort = cs.value; renderSheet(); };
     for (const idr of ["pmin", "pmax"]) { const el = $("#" + idr); if (el) el.oninput = () => { clearTimeout(rangeTimer); rangeTimer = setTimeout(() => { if (!state.sheet) return; state.sheet[idr === "pmin" ? "min" : "max"] = parsePrice(el.value); renderSheet(); }, 450); }; }
     const ef = $("#editForm"); if (ef) ef.onsubmit = e => { e.preventDefault(); saveEdit(ef); };
@@ -1808,9 +1910,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const st = $("#settingsForm"); if (st) st.onsubmit = e => {
       e.preventDefault();
       const k = String(new FormData(st).get("key") || "").trim();
-      if (k) settings.apiKey = k;
-      settings.model = String(new FormData(st).get("model") || MODELS[0][0]);
-      toast(k ? "Schlüssel gespeichert." : "Einstellungen gespeichert."); closeSheet(); render();
+      if (!k) { toast("Gib zuerst einen Schlüssel ein."); $("#set-key").focus(); return; }
+      settings.apiKey = k; settings.model = String(new FormData(st).get("model") || MODELS[0][0]);
+      toast("Schlüssel gespeichert."); closeSheet(); render();
     };
   }
 
@@ -1829,6 +1931,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     }
     toastExpire = opts.onExpire || null;
     t.hidden = false; clearTimeout(toastTimer);
+    t.classList.remove("pop"); void t.offsetWidth; t.classList.add("pop");
     toastTimer = setTimeout(() => { t.hidden = true; if (toastExpire) { const f = toastExpire; toastExpire = null; f(); } }, opts.duration || 4800);
   }
 
@@ -1898,7 +2001,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   document.addEventListener("click", e => {
     if (swallowClick && e.target.closest(".swipe")) { e.preventDefault(); return; }
     const tabBtn = e.target.closest("[data-tab]");
-    if (tabBtn) { state.tab = tabBtn.dataset.tab; closeSheet(); render(); window.scrollTo(0, 0); return; }
+    if (tabBtn) { state.tab = tabBtn.dataset.tab; closeSheet(); render(); window.scrollTo(0, 0); updateBar(); return; }
     const el = e.target.closest("[data-act]"); if (!el) return;
     const act = el.dataset.act, id = el.dataset.id;
     if (act === "scrim") { if (e.target === el) closeSheet(); return; }
@@ -1921,7 +2024,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "search-card": openSheet({ type: "search", target: { kind: "card", id }, ...searchFor(card) }); break;
       case "pick": pickResult(Number(el.dataset.idx)); break;
       case "finish": openSheet({ type: "finish" }); break;
-      case "commit": commitSession(); break;
+      case "commit": audioUnlock(); commitSession(); break;
       case "discard": openSheet({ type: "discard" }); break;
       case "discard-yes": discardSession(); break;
       case "goinv": closeSheet(); state.tab = "inv"; render(); window.scrollTo(0, 0); break;
@@ -1934,6 +2037,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "test": testConnections(); break;
       case "delete": state.sheet.confirmDelete = true; renderSheet(); break;
       case "delete-yes": deleteCard(id); break;
+      case "set-auto": settings.auto = !settings.auto; el.setAttribute("aria-checked", String(settings.auto)); break;
+      case "set-sound": settings.sound = !settings.sound; el.setAttribute("aria-checked", String(settings.sound)); if (settings.sound) { audioUnlock(); cashSound(false); } break;
       case "key-del": settings.apiKey = ""; toast("Schlüssel gelöscht."); renderSheet(); render(); break;
       case "export": exportData(); break;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
@@ -1981,7 +2086,19 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   if (darkMQ) { const onChange = () => { if (settings.theme === "auto") applyTheme(); }; darkMQ.addEventListener ? darkMQ.addEventListener("change", onChange) : darkMQ.addListener(onChange); }
   applyTheme();
   // Hairline under the navigation bar once the page scrolls, like iOS.
-  window.addEventListener("scroll", () => { const t = $("#topbar"); if (t) t.classList.toggle("scrolled", window.scrollY > 4); }, { passive: true });
+  // The large title scrolls under the bar; once it is mostly hidden, the small title fades in at the centre.
+  // Pulling down past the top stretches the large title slightly, like iOS.
+  function updateBar() {
+    const t = $("#topbar"), b = $("#brand"); if (!t || !b) return;
+    const barBottom = t.getBoundingClientRect().bottom, r = b.getBoundingClientRect(), h1 = b.firstElementChild.getBoundingClientRect();
+    t.classList.toggle("scrolled", r.top < barBottom - 1);
+    t.classList.toggle("titled", h1.top + h1.height * 0.7 < barBottom);
+    const y = window.scrollY; b.style.transform = y < 0 ? `scale(${(1 + Math.min(-y, 120) / 600).toFixed(3)})` : "";
+  }
+  window.addEventListener("scroll", updateBar, { passive: true });
+  window.addEventListener("resize", updateBar);
+  // Lets :active press states show on iOS.
+  document.addEventListener("touchstart", () => {}, { passive: true });
 
   // ---------- boot ----------
   const SYNC_MARGIN = 10 * 60e3;            // tolerate clock differences between devices
