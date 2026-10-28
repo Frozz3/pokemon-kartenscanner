@@ -2540,7 +2540,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const t = settings.theme;
     if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
     const dark = isDark();
-    document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.setAttribute("content", dark ? "#000000" : "#F2F2F7"); m.removeAttribute("media"); });
+    document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.setAttribute("content", dark ? "#0B0D1A" : "#F6F4EF"); m.removeAttribute("media"); });
     if (!camOpen()) statusBar(dark);
     const b = $("#themeBtn");
     if (b) { b.innerHTML = dark ? ICON_SUN : ICON_MOON; b.setAttribute("aria-label", dark ? "Helle Darstellung" : "Dunkle Darstellung"); }
