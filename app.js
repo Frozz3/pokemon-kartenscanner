@@ -1208,8 +1208,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "E-Mail oder Passwort ist falsch.";
     if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) return "Dieses Konto ist noch nicht bestätigt. Schalte in Supabase unter Authentication → Sign In / Providers „Confirm email“ aus und lege das Konto neu an.";
     if (code === "user_already_exists" || code === "email_exists" || /already registered/i.test(msg)) return "Mit dieser E-Mail gibt es schon ein Konto. Melde dich an.";
+    if (code === "same_password" || /should be different/i.test(msg)) return "Das neue Passwort muss sich vom alten unterscheiden.";
     if (code === "weak_password" || /password should/i.test(msg)) return "Das Passwort ist zu schwach. Nimm mindestens 8 Zeichen.";
-    if (code === "same_password") return "Das neue Passwort muss sich vom alten unterscheiden.";
     if (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429)) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
     if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind für diese App deaktiviert.";
     if (/sending.*email|confirmation email/i.test(msg)) return "Supabase will eine Bestätigungs-E-Mail schicken. Schalte unter Authentication → Sign In / Providers „Confirm email“ aus und versuch es erneut.";
@@ -1286,12 +1286,12 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     try {
       const id = await emailIdOf(email), hpw = await pwHash(cur);
       // Confirm the current password (any of the stored forms) before changing anything.
-      let ok = false;
-      for (const pw of [hpw, cur]) { const { error } = await sb.auth.signInWithPassword({ email: state.user.email, password: pw }); if (!error) { ok = true; break; } }
+      let ok = null;
+      for (const pw of [hpw, cur]) { const { error } = await sb.auth.signInWithPassword({ email: state.user.email, password: pw }); if (!error) { ok = pw; break; } }
       if (!ok) return fail("Das aktuelle Passwort ist falsch.");
-      // Password first (always possible), then the login address. If Supabase refuses to change the
-      // address directly (it would want to send a confirmation mail), show SQL with only the hash.
-      { const { error } = await sb.auth.updateUser({ password: hpw }); if (error) throw error; }
+      // Password first (only if it is still stored unhashed), then the login address. If Supabase refuses
+      // to change the address directly (it would want to send a confirmation mail), show SQL with only the hash.
+      if (ok !== hpw) { const { error } = await sb.auth.updateUser({ password: hpw }); if (error && error.code !== "same_password") throw error; }
       try { localStorage.setItem("ks-login", email); } catch (_) {}
       let changed = false;
       try { const { data, error } = await sb.auth.updateUser({ email: id }); if (!error && data && data.user && data.user.email === id) { state.user = data.user; changed = true; } } catch (_) {}
