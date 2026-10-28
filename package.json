@@ -1,0 +1,18 @@
+{
+  "name": "pokemon-kartenscanner",
+  "private": true,
+  "description": "Pokémon-Karten scannen und bewerten. Web-App (GitHub Pages) und iOS-App (Capacitor, zum Sideloaden).",
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3",
+    "@capacitor/filesystem": "8.1.5",
+    "@capacitor/haptics": "8.0.2",
+    "@capacitor/share": "8.0.3",
+    "@capacitor/splash-screen": "8.0.2",
+    "@capacitor/status-bar": "8.0.4"
+  }
+}

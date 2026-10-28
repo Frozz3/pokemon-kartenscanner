@@ -1,0 +1,66 @@
+# Builds the iOS app (unsigned .ipa) on a Mac in the cloud and publishes it as the release "ios-latest".
+# Install it on the iPhone from a Windows PC with Sideloadly (it signs with your Apple ID).
+name: iOS-App bauen
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["README.md", "supabase/**", "sw.js", "icons/splash/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-app
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Abhängigkeiten
+        run: npm ci --no-audit --no-fund
+
+      - name: Web-App für die App vorbereiten
+        run: node scripts/build-web.mjs "${{ github.run_number }}"
+
+      - name: iOS-Projekt erzeugen und anpassen
+        run: |
+          npx cap add ios
+          bash scripts/ios-customize.sh
+          npx cap sync ios
+
+      - name: App bauen (unsigniert)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" archive \
+            MARKETING_VERSION=1.0 CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -quiet
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$RUNNER_TEMP/Kartenscanner.ipa" Payload)
+          ls -la "$RUNNER_TEMP/Kartenscanner.ipa"
+
+      - name: Als Release „ios-latest" veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ios-latest --yes --cleanup-tag || true
+          gh release create ios-latest "$RUNNER_TEMP/Kartenscanner.ipa" \
+            --target "${{ github.sha }}" \
+            --title "iOS-App (Build ${{ github.run_number }})" \
+            --notes "Unsignierte iOS-App zum Sideloaden, gebaut aus ${{ github.sha }}. Installation: Kartenscanner.ipa herunterladen und mit Sideloadly auf das iPhone spielen (Anleitung in der README)."

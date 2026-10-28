@@ -1,5 +1,5 @@
-/* Pokémon Kartenscanner – standalone web app (GitHub Pages).
- * Storage: IndexedDB in the phone's browser.
+/* Pokémon Kartenscanner – web app (GitHub Pages) and iOS app (the same code in a Capacitor shell).
+ * Storage: Supabase account, with a local copy in IndexedDB.
  * Recognition: Anthropic Messages API with the user's own key (stored only in this browser).
  * Prices: Cardmarket data from the free TCGdex API (https://tcgdex.dev).
  */
@@ -29,6 +29,44 @@
   const MODELS = [["claude-sonnet-5-5", "Claude Sonnet 5.5 (genauer)"], ["claude-haiku-5-5", "Claude Haiku 5.5 (günstiger, schneller)"]];
   const condLabel = c => (CONDITIONS.find(x => x[0] === c) || [c, c || "–"])[1];
   const langLabel = c => (LANGS.find(x => x[0] === c) || [c, c || "–"])[1];
+
+  // ---------- native app (Capacitor on iOS) ----------
+  // In the iOS app the same code runs inside a native shell; these hooks add haptics, status bar
+  // colours, native sharing and an update hint. In the browser they do nothing.
+  const Cap = window.Capacitor;
+  const NATIVE = !!(Cap && typeof Cap.isNativePlatform === "function" && Cap.isNativePlatform());
+  const plug = n => (NATIVE && Cap.Plugins && Cap.Plugins[n]) || null;
+  const quiet = p => { try { Promise.resolve(p).catch(() => {}); } catch (_) {} };
+  function haptic(kind = "light") {
+    const h = plug("Haptics");
+    if (!h) { if (kind === "medium" && navigator.vibrate) navigator.vibrate(12); return; }
+    try { quiet(kind === "success" || kind === "warning" || kind === "error" ? h.notification({ type: kind.toUpperCase() }) : h.impact({ style: kind.toUpperCase() })); } catch (_) {}
+  }
+  const statusBar = darkBg => { const p = plug("StatusBar"); if (p) try { quiet(p.setStyle({ style: darkBg ? "DARK" : "LIGHT" })); } catch (_) {} };
+  if (NATIVE) {
+    document.documentElement.classList.add("native");
+    const vp = document.querySelector('meta[name="viewport"]'); if (vp) vp.setAttribute("content", "width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover");
+  }
+  const RELEASE_PAGE = "https://github.com/Frozz3/pokemon-kartenscanner/releases/tag/ios-latest";
+  const app = { build: 0, update: 0 };
+  async function checkAppUpdate() {
+    if (!NATIVE) return;
+    try { app.build = Number((await (await fetch("version.json", { cache: "no-store" })).json()).build) || 0; } catch (_) {}
+    let last = 0, known = 0; try { last = Number(localStorage.getItem("ks-updchk") || 0); known = Number(localStorage.getItem("ks-updbuild") || 0); } catch (_) {}
+    if (Date.now() - last > 6 * 3600e3) {
+      try {
+        const r = await fetch("https://api.github.com/repos/Frozz3/pokemon-kartenscanner/releases/tags/ios-latest", { headers: { accept: "application/vnd.github+json" } });
+        if (r.ok) { const m = /Build\s+(\d+)/i.exec((await r.json()).name || ""); known = m ? Number(m[1]) : 0; }
+        localStorage.setItem("ks-updchk", String(Date.now())); localStorage.setItem("ks-updbuild", String(known));
+      } catch (_) {}
+    }
+    app.update = app.build && known > app.build ? known : 0;
+    if (app.update) {
+      let told = 0; try { told = Number(localStorage.getItem("ks-updtold") || 0); } catch (_) {}
+      if (told !== app.update) { try { localStorage.setItem("ks-updtold", String(app.update)); } catch (_) {} setTimeout(() => toast("Eine neue App-Version ist da. Details unter Einstellungen → App."), 1500); }
+    }
+    if (state.sheet && state.sheet.type === "settings") renderSheet();
+  }
 
   // ---------- settings (localStorage) ----------
   const settings = (() => {
@@ -752,6 +790,14 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const data = { app: "pokemon-kartenscanner", version: 2, exportedAt: new Date().toISOString(), cards: state.cards, sessions: state.sessions, items: state.items };
     const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
     const name = `kartenscanner-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const fs = plug("Filesystem"), share = plug("Share");
+    if (fs && share) {
+      try {
+        const { uri } = await fs.writeFile({ path: name, data: JSON.stringify(data), directory: "CACHE", encoding: "utf8" });
+        await share.share({ title: "Kartenscanner-Backup", url: uri, dialogTitle: "Backup sichern" });
+      } catch (e) { if (!/cancel/i.test(String(e && (e.message || e)))) toast("Das Backup ließ sich nicht teilen."); }
+      return;
+    }
     const file = new File([blob], name, { type: "application/json" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file], title: "Kartenscanner-Backup" }); return; } catch (e) { if (e && e.name === "AbortError") return; }
@@ -1046,7 +1092,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       $("#camFallback").click(); return;
     }
     const v = $("#camVideo"); v.srcObject = stream;
-    $("#camera").hidden = false;
+    $("#camera").hidden = false; statusBar(true);
     camShots = 0; prevG = null; lastG = null; stableSince = performance.now(); lastShot = performance.now(); frameState = "x";
     $("#camFeed").innerHTML = ""; $("#camPrice").classList.remove("on");
     updateCamTools(); setFrameState(""); updateCamSum();
@@ -1056,7 +1102,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   function closeCamera() {
     clearInterval(camTimer); camTimer = null;
     if (stream) stream.getTracks().forEach(t => t.stop());
-    stream = null; $("#camera").hidden = true; $("#camVideo").srcObject = null;
+    stream = null; $("#camera").hidden = true; $("#camVideo").srcObject = null; statusBar(isDark());
   }
   function updateCamTools() {
     $("#camAutoBtn").setAttribute("aria-pressed", String(settings.auto));
@@ -1068,6 +1114,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     $("#camSum").textContent = items.length ? `Session: ${money(sessionTotal(items))}` : "";
   }
   async function shoot(auto) {
+    haptic("medium");
     const v = $("#camVideo"); if (!v.videoWidth) return;
     if (!auto) { try { lastG = sampleGray(v); } catch (_) {} lastShot = performance.now(); }
     const flash = $("#camFlash"); flash.classList.add("on"); setTimeout(() => flash.classList.remove("on"), 60);
@@ -1108,7 +1155,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       pill.classList.toggle("dup", !!d.ses);
       pill.classList.remove("on"); void pill.offsetWidth; pill.classList.add("on");
       clearTimeout(priceTimer); priceTimer = setTimeout(() => pill.classList.remove("on"), d.ses ? 5000 : 3500);
-      if (d.ses) dupSound(); else if (price !== null) cashSound(price >= BIG_PRICE);
+      if (d.ses) { dupSound(); haptic("warning"); } else if (price !== null) { cashSound(price >= BIG_PRICE); haptic("success"); }
     } else if (el) {
       el.classList.add("err");
       el.querySelector(".n").textContent = patch.status === "nocard" ? "Keine Karte erkannt" : (patch.error || "Nicht erkannt");
@@ -1635,7 +1682,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       el.textContent = money(s.total * e);
       if (k < 1) { requestAnimationFrame(step); return; }
       el.textContent = money(s.total); el.classList.remove("counting"); el.classList.add("landed");
-      cashSound(true);
+      cashSound(true); haptic("success");
       const box = el.parentElement.querySelector(".coins"); if (!box) return;
       const n = Math.min(26, 12 + Math.round(Math.log10(1 + s.total) * 5));
       box.innerHTML = Array.from({ length: n }, (_, i) => {
@@ -1885,6 +1932,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <section><h3 class="gh">Sicherung</h3>
           <div class="group">${link("export", "Backup speichern")}${link("import", "Backup laden")}</div>
           <p class="gf">Inventar und Verlauf als Datei, ohne Fotos. Deine Daten liegen ohnehin dauerhaft in deinem Konto.</p></section>
+        ${NATIVE ? `<section><h3 class="gh">App</h3>
+          <div class="group"><div class="cell"><span>Version</span><span class="val">${app.build ? `Build ${app.build}` : "–"}</span></div>${app.update ? link("app-update", "Update laden", `Build ${app.update}`) : ""}</div>
+          <p class="gf">${app.update ? "Lade die neue Datei herunter und installiere sie mit Sideloadly über die alte App; deine Daten bleiben erhalten." : "Du hast die aktuelle Version."} Mit einer kostenlosen Apple-ID muss die App alle 7 Tage neu signiert werden.</p></section>` : ""}
         <div class="group"><button class="cell action danger center" type="button" data-act="logout">Abmelden</button></div>
         <p class="fine legal">Preisdaten: <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a> (Cardmarket, täglich aktualisiert). Pokémon und Pokémon-Kartennamen sind Marken von Nintendo, Creatures und GAME FREAK; diese App ist ein privates Fanprojekt.</p>
       </div>`;
@@ -1976,7 +2026,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     sw.fg.style.transform = `translateX(${sw.dx}px)`;
     sw.li.style.setProperty("--p", p.toFixed(3));
     const armed = p >= 1;
-    if (armed !== sw.armed) { sw.armed = armed; sw.li.classList.toggle("armed", armed); if (armed && navigator.vibrate) navigator.vibrate(12); }
+    if (armed !== sw.armed) { sw.armed = armed; sw.li.classList.toggle("armed", armed); if (armed) haptic("medium"); }
   }, { passive: false });
   function endSwipe(e) {
     if (!sw || (e && e.pointerId !== sw.pid)) return;
@@ -2037,8 +2087,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "test": testConnections(); break;
       case "delete": state.sheet.confirmDelete = true; renderSheet(); break;
       case "delete-yes": deleteCard(id); break;
-      case "set-auto": settings.auto = !settings.auto; el.setAttribute("aria-checked", String(settings.auto)); break;
-      case "set-sound": settings.sound = !settings.sound; el.setAttribute("aria-checked", String(settings.sound)); if (settings.sound) { audioUnlock(); cashSound(false); } break;
+      case "set-auto": haptic("light"); settings.auto = !settings.auto; el.setAttribute("aria-checked", String(settings.auto)); break;
+      case "set-sound": haptic("light"); settings.sound = !settings.sound; el.setAttribute("aria-checked", String(settings.sound)); if (settings.sound) { audioUnlock(); cashSound(false); } break;
+      case "app-update": window.open(RELEASE_PAGE, "_blank"); break;
       case "key-del": settings.apiKey = ""; toast("Schlüssel gelöscht."); renderSheet(); render(); break;
       case "export": exportData(); break;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
@@ -2079,6 +2130,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
     const dark = isDark();
     document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.setAttribute("content", dark ? "#000000" : "#F2F2F7"); m.removeAttribute("media"); });
+    if (!camOpen()) statusBar(dark);
     const b = $("#themeBtn");
     if (b) { b.innerHTML = dark ? ICON_SUN : ICON_MOON; b.setAttribute("aria-label", dark ? "Helle Darstellung" : "Dunkle Darstellung"); }
   }
@@ -2237,5 +2289,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     });
   }
 
+  if (NATIVE) {
+    requestAnimationFrame(() => requestAnimationFrame(() => { const sp = plug("SplashScreen"); if (sp) try { quiet(sp.hide({ fadeOutDuration: 0 })); } catch (_) {} }));
+    setTimeout(checkAppUpdate, 2500);
+  }
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

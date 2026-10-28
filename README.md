@@ -23,6 +23,31 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Schnell:** Die App merkt sich deine Daten auf dem Gerät und zeigt sie sofort beim Start, auch ohne Verbindung. Danach lädt sie nur, was sich seit dem letzten Mal geändert hat (einmal am Tag zur Sicherheit alles). Sessions werden gebündelt gespeichert, Preise parallel aktualisiert; gleiche Karten werden dabei nur einmal abgefragt.
 - Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
 
+## Als iOS-App (Sideloading, ohne Mac)
+
+Dieselbe App gibt es auch als echte iOS-App: eigenes Icon und Startbildschirm, kein Safari drumherum, Kamera-Erlaubnis bleibt gespeichert, Vibration beim Scannen, Löschen und am Session-Ende, Backup über das iOS-Teilen-Menü.
+
+GitHub baut sie bei jeder Änderung automatisch auf einem Mac in der Cloud (Workflow `.github/workflows/ios-app.yml`) und legt die neueste Datei hier ab:
+**https://github.com/Frozz3/pokemon-kartenscanner/releases/download/ios-latest/Kartenscanner.ipa**
+
+Installation mit dem Windows-PC und einer kostenlosen Apple-ID:
+
+1. **iTunes** von apple.com installieren (nicht die Microsoft-Store-Version), danach **Sideloadly** von sideloadly.io.
+2. iPhone per USB anschließen, entsperren und „Vertrauen“ tippen.
+3. In Sideloadly die `Kartenscanner.ipa` hineinziehen, deine Apple-ID eintragen, **Start** klicken und das Apple-ID-Passwort eingeben.
+4. Auf dem iPhone: **Einstellungen → Datenschutz & Sicherheit → Entwicklermodus** einschalten (Neustart, dann bestätigen).
+5. **Einstellungen → Allgemein → VPN & Geräteverwaltung** → deine Apple-ID → **Vertrauen**.
+6. App öffnen, anmelden, API-Schlüssel eintragen. Die Daten kommen wie gewohnt aus deinem Konto.
+
+Wichtig bei einer kostenlosen Apple-ID:
+
+- Die Signatur gilt **7 Tage**. Danach startet die App nicht mehr, bis du sie neu aufspielst (Schritt 3 mit der neuesten `.ipa`). Deine Daten bleiben dabei erhalten, weil sie in deinem Konto liegen. Mit der neuesten Datei bekommst du gleich alle Updates mit.
+- Höchstens 3 selbst installierte Apps gleichzeitig.
+- Die App zeigt unter Einstellungen → App ihre Version und meldet, wenn eine neuere bereitliegt.
+- Mit einem bezahlten Apple-Entwicklerkonto (99 €/Jahr) gilt die Signatur 1 Jahr.
+
+Die Web-Version unter der Live-Adresse funktioniert parallel weiter.
+
 ## Auf dem iPhone installieren
 
 1. Die Live-Adresse in **Safari** öffnen.
@@ -86,6 +111,10 @@ Reines HTML, CSS und JavaScript ohne Build-Schritt:
 | `supabase/username-migration.sql` | Ältere Variante: Konto auf Benutzernamen umstellen (nicht mehr nötig) |
 | `vendor/supabase.js` | Supabase-Client 2.117.3 (MIT-Lizenz) |
 | `sw.js` | Service Worker für Offline-Start |
+| `package.json`, `capacitor.config.json` | iOS-App-Hülle (Capacitor 8) |
+| `scripts/` | Web-Dateien für die App vorbereiten, Xcode-Projekt anpassen |
+| `resources/` | App-Icon und Startbilder der iOS-App |
+| `.github/workflows/ios-app.yml` | Baut die unsignierte `.ipa` und veröffentlicht sie als Release `ios-latest` |
 | `manifest.webmanifest`, `icons/` | PWA-Angaben, App-Icons und Startbilder (`icons/splash/`) |
 
 GitHub Pages: Settings → Pages → Source „Deploy from a branch“, Branch `main`, Ordner `/ (root)`.
