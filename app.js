@@ -134,6 +134,12 @@
       put: (uid, t, objs) => run("rows", "readwrite", st => { for (const o of objs) st.put({ k: key(uid, t, o.id), t, o: clone(o) }); }).catch(() => {}),
       del: (uid, t, ids) => run("rows", "readwrite", st => { for (const id of ids) st.delete(key(uid, t, id)); }).catch(() => {}),
       getMeta: uid => run("meta", "readonly", st => st.get(uid)).catch(() => null),
+      accounts: async () => {
+        const rows = await run("rows", "readonly", st => st.getAll());
+        const by = new Map();
+        for (const r of rows || []) { const u = String(r.k).split("|")[0]; const a = by.get(u) || { uid: u, cards: 0, qty: 0, value: 0, sessions: 0, history: 0 }; if (r.t === "cards") { a.cards++; a.qty += r.o.qty || 1; a.value += (num(r.o.priceEur) || 0) * (r.o.qty || 1); } else if (r.t === "sessions") a.sessions++; else if (r.t === "history") a.history++; by.set(u, a); }
+        return [...by.values()];
+      },
       clear: uid => Promise.all([run("rows", "readwrite", st => { st.delete(IDBKeyRange.bound(uid + "|", uid + "|\uffff")); }), run("meta", "readwrite", st => { st.delete(uid); })]).catch(() => {}),
       setMeta: (uid, m) => run("meta", "readwrite", st => { st.put(m, uid); }).catch(() => {}),
     };
@@ -1681,6 +1687,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     return `<div class="stack admin">${tabs}${inner}</div>`;
   }
   function adminAfterRender(s) {
+    if (s.tab === "care" && !s.local && !s.localBusy) { s.localBusy = true; Cache.accounts().then(a => { s.local = a.filter(x => x.cards || x.sessions || x.history); s.localBusy = false; if (state.sheet === s) renderSheet(); }).catch(() => { s.local = []; s.localBusy = false; }); }
     if (s.tab === "users" && !s.users && !s.usersLoading && !s.usersErr) adminLoadUsers();
     if (s.tab === "tests" && !s.diag && !s.diagBusy) adminDiag();
   }
@@ -1774,6 +1781,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <button class="cell action" type="button" data-act="admin-clear-cache" ${s.clearing ? "disabled" : ""}>${s.clearing ? "Wird neu geladen …" : "Zwischenspeicher leeren und neu laden"}</button>
         <button class="cell action" type="button" data-act="export">Backup exportieren</button></div>
       <p class="gf" style="margin-top:-8px">Betrifft dein Konto auf diesem Gerät.</p>
+      <section><h3 class="gh">Auf diesem Gerät gespeicherte Sammlungen</h3>
+        ${s.local ? (s.local.length ? `<div class="group">${s.local.map(a => `<div class="cell" style="flex-wrap:wrap"><span>${a.uid === uidNow() ? "Dieses Konto" : "Früheres Konto"} <span class="muted">${esc(a.uid.slice(0, 8))}</span><br><span class="fine">${nfmt(a.qty)} Karten · ${money(a.value)} · ${nfmt(a.sessions)} Sessions · ${nfmt(a.history)} Verlaufstage</span></span>${a.uid === uidNow() ? "" : `<button class="btn small" type="button" data-act="admin-restore" data-id="${esc(a.uid)}" ${s.restoring ? "disabled" : ""}>${s.restoring === a.uid ? esc(s.restoreStage || "Übernehme …") : "In dieses Konto übernehmen"}</button>`}</div>`).join("")}</div>` : `<div class="notice">Keine gespeicherten Sammlungen gefunden.</div>`) : `<div class="notice">Wird gesucht …</div>`}
+        <p class="gf">Holt eine Sammlung zurück, die nur noch auf diesem Gerät liegt (z. B. nach einem gelöschten Konto). Gleiche Karten werden nicht doppelt angelegt.</p></section>
       <section><h3 class="gh">Fehlerprotokoll (dieses Gerät)</h3>
         ${log.length ? `<ul class="list loglist">${log.slice(0, 40).map(x => `<li><div class="sub">${esc(new Date(x.t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }))} · ${esc(x.w)}</div><div class="logmsg">${esc(x.m)}</div></li>`).join("")}</ul>
           <div class="actions" style="margin-top:10px"><button class="btn small" type="button" data-act="admin-log-copy">Kopieren</button><button class="btn small danger" type="button" data-act="admin-log-clear">Leeren</button></div>` : `<div class="notice">Keine Fehler aufgezeichnet.</div>`}</section>`;
@@ -1890,6 +1900,34 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       ["Schlüssel", settings.apiKey ? "eingerichtet" : "fehlt"], ["Einträge im Fehlerprotokoll", String(readErrLog().length)],
     ];
     s.diagBusy = false; if (state.sheet === s) renderSheet();
+  }
+  // Copies a collection that is only left in this device's cache into the signed-in account,
+  // including its photos (admins may read other folders in the photo storage).
+  async function adminRestore(oldUid) {
+    const s = state.sheet; if (!s || !oldUid || oldUid === uidNow()) return;
+    const stage = t => { s.restoreStage = t; if (state.sheet === s) renderSheet(); };
+    s.restoring = oldUid; stage("Lese Gerätekopie …");
+    try {
+      const d = await Cache.load(oldUid);
+      const have = new Set(state.cards.map(c => c.id)), haveS = new Set(state.sessions.map(x => x.id)), haveH = new Set(state.history.map(x => x.id));
+      const cards = d.cards.filter(c => !have.has(c.id)), sessions = d.sessions.filter(x => !haveS.has(x.id)), items = d.items, hist = d.history.filter(x => !haveH.has(x.id));
+      stage(`Übernehme ${cards.length} Karten …`);
+      await saveMany("cards", cards);
+      await saveMany("sessions", sessions);
+      if (items.length) await saveMany("items", items);
+      if (hist.length) { await Store.putMany("history", hist); state.history.push(...hist); }
+      // Photos: copy <old>/<id>.jpg to <new>/<id>.jpg (best effort; cards keep their thumbnails anyway).
+      const ids = [...new Set([...cards, ...items].map(x => x.imageId).filter(Boolean))];
+      let copied = 0;
+      for (let i = 0; i < ids.length; i++) {
+        if (i % 5 === 0) stage(`Fotos ${i}/${ids.length} …`);
+        try { const r = await sb.storage.from(BUCKET).copy(`${oldUid}/${ids[i]}.jpg`, Img.path(ids[i])); if (!r.error) copied++; } catch (_) {}
+      }
+      state.open = state.sessions.filter(x => x.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
+      toast(`Wiederhergestellt: ${cards.length} Karten, ${sessions.length} Sessions, ${hist.length} Verlaufstage${ids.length ? `, ${copied} von ${ids.length} Fotos` : ""}.`, { duration: 8000 });
+      scheduleSnapshot(); render();
+    } catch (e) { logErr("Wiederherstellen", e); toast("Wiederherstellen hat nicht geklappt. Prüfe die Verbindung und versuch es erneut."); }
+    s.restoring = null; s.restoreStage = null; s.local = null; if (state.sheet === s) renderSheet();
   }
   async function adminClearCache() {
     const s = state.sheet; if (!s) return;
@@ -2456,6 +2494,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "admin-conn": adminConn(); break;
       case "admin-scan": adminPickScan(); break;
       case "admin-clear-cache": adminClearCache(); break;
+      case "admin-restore": adminRestore(id); break;
       case "admin-log-copy": { const t = readErrLog().map(x => `${new Date(x.t).toLocaleString("de-DE")} [${x.w}] ${x.m}`).join("\n"); (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Protokoll kopiert."), () => toast("Kopieren ging nicht.")); break; }
       case "admin-log-clear": try { localStorage.removeItem(ERRLOG_KEY); } catch (_) {} renderSheet(); break;
       case "set-tech": haptic("light"); settings.tech = !settings.tech; el.setAttribute("aria-checked", String(settings.tech)); render(); break;
@@ -2532,6 +2571,13 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.open = state.sessions.filter(x => x.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
   }
   // Start from the copy on this device (instant), then fetch only what changed on the server.
+  // Safety net: if the server suddenly has nothing at all while this device still has data, keep the
+  // device copy (it can be restored in the admin area) instead of wiping it.
+  function dropCached(uid, t, gone, serverCount) {
+    if (!gone.length) return;
+    if (serverCount === 0) { logErr("Abgleich", `Server meldet ${t} leer, ${gone.length} Einträge bleiben auf dem Gerät`); return; }
+    Cache.del(uid, t, gone);
+  }
   let syncing = null;
   function loadAll() { return syncing || (syncing = loadAllNow().finally(() => { syncing = null; })); }
   async function loadAllNow() {
@@ -2554,10 +2600,10 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           rows.forEach(o => byId.set(o.id, o));
           list = [...byId.values()];
           const gone = lists[t].filter(o => !alive.has(o.id)).map(o => o.id);
-          if (gone.length) Cache.del(uid, t, gone);
+          dropCached(uid, t, gone, ids.length);
         }
         if (rows.length) Cache.put(uid, t, rows);
-        if (!since) { const keep = new Set(rows.map(o => o.id)); const gone = lists[t].filter(o => !keep.has(o.id)).map(o => o.id); if (gone.length) Cache.del(uid, t, gone); }
+        if (!since) { const keep = new Set(rows.map(o => o.id)); const gone = lists[t].filter(o => !keep.has(o.id)).map(o => o.id); dropCached(uid, t, gone, rows.length); }
         lists[t] = list;
         if (max) nextMeta.since[t] = max > (nextMeta.since[t] || "") ? max : nextMeta.since[t];
         if (t === "history") state.historyOk = true;
