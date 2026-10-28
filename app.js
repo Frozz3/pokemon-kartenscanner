@@ -1328,11 +1328,13 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (code === "user_already_exists" || code === "email_exists" || /already registered/i.test(msg)) return "Mit dieser E-Mail gibt es schon ein Konto. Melde dich an.";
     if (code === "same_password" || /should be different/i.test(msg)) return "Das neue Passwort muss sich vom alten unterscheiden.";
     if (code === "weak_password" || /password should/i.test(msg)) return "Das Passwort ist zu schwach. Nimm mindestens 8 Zeichen.";
-    if (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429)) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
+    if (code !== "over_email_send_rate_limit" && (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429))) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
     if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind gerade nicht möglich. Versuch es später erneut.";
-    if (/sending.*email|confirmation email/i.test(msg)) { logErr("Anmeldung", "Supabase will eine Bestätigungs-Mail senden: „Confirm email“ ausschalten"); return "Das Konto lässt sich gerade nicht anlegen. Wende dich an den Admin der App."; }
+    if (/sending.*email|confirmation email|email_address_not_authorized|over_email_send_rate_limit|not authorized/i.test(code + " " + msg)) { logErr("Anmeldung", "Supabase will eine Bestätigungs-Mail senden: „Confirm email“ ausschalten"); return "Das Konto lässt sich gerade nicht anlegen. Wende dich an den Admin der App."; }
     if (/fetch|network/i.test(msg)) return "Keine Verbindung zum Server. Prüfe dein Internet.";
-    return msg || "Das hat nicht geklappt. Versuch es erneut.";
+    // Never show raw server messages (they can contain the internal login id); the admin finds them in the log.
+    logErr("Anmeldung", (code ? code + ": " : "") + msg);
+    return "Das hat nicht geklappt. Versuch es erneut oder wende dich an den Admin der App.";
   }
 
   function renderAuth() {
