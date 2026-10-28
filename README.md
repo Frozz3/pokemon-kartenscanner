@@ -18,6 +18,7 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Konto mit Login:** Benutzername und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. Es wird keine E-Mail-Adresse gespeichert: Der Benutzername wird als SHA-256-Hash (`u-<hash>@kartenscanner.invalid`) als Login-Kennung verwendet. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
 - **Automatische Abmeldung** nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.
 - **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
+- **Design im iOS-Stil** mit Systemschrift, großen Titeln, gruppierten Listen und durchscheinender Tab-Leiste; **Hell, Dunkel oder Automatisch** (Schalter oben rechts und in den Einstellungen).
 - Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
 
 ## Auf dem iPhone installieren
@@ -72,7 +73,7 @@ Reines HTML, CSS und JavaScript ohne Build-Schritt:
 | Datei | Inhalt |
 |---|---|
 | `index.html` | Grundgerüst |
-| `styles.css` | Gestaltung, hell und dunkel |
+| `styles.css` | Gestaltung im iOS-Stil, hell und dunkel |
 | `app.js` | Logik: Login, Speicher, Kamera, Erkennung, Preise, Oberfläche |
 | `config.js` | Supabase-Adresse und öffentlicher Schlüssel |
 | `supabase/schema.sql` | Tabellen, Zugriffsregeln und Bildspeicher |

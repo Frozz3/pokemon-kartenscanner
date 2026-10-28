@@ -42,6 +42,7 @@
       get auto() { return read("auto", "1") === "1"; }, set auto(v) { write("auto", v ? "1" : "0"); },
       get setSort() { return read("setsort", "progress"); }, set setSort(v) { write("setsort", v); },
       get cardSort() { return read("cardsort", "num"); }, set cardSort(v) { write("cardsort", v); },
+      get theme() { const t = read("theme", "auto"); return t === "light" || t === "dark" ? t : "auto"; }, set theme(v) { write("theme", v === "auto" ? "" : v); },
       get idle() { const n = Number(read("idle", "15")); return isFinite(n) ? n : 15; }, set idle(v) { write("idle", String(v)); },
     };
   })();
@@ -1028,9 +1029,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   const imgTag = (src, alt) => src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy">` : "";
   const thumbOf = (thumb, card) => thumb || officialImg(card, "low");
 
+  const TAB_TITLES = { scan: "Scannen", inv: "Inventar", sets: "Sets", value: "Wert", hist: "Verlauf" };
   function render() {
     const authed = !!state.user && !state.recovery;
-    $("#view-auth").hidden = authed; $("#nav").hidden = !authed; $("#topRight").hidden = !authed;
+    $("#view-auth").hidden = authed; $("#nav").hidden = !authed; $("#topRight").hidden = !authed; $("#subtitle").hidden = !authed;
+    $("#pageTitle").textContent = authed ? (TAB_TITLES[state.tab] || "Kartenscanner") : "Kartenscanner";
     if (!authed) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
     document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("#navDot").innerHTML = state.open && state.tab !== "scan" ? '<span class="dot" title="Offene Session"></span>' : "";
@@ -1156,7 +1159,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <div class="eyebrow">Neue Scan-Session</div>
           <h2>Karten scannen, Marktwert sehen, ins Inventar legen</h2>
           <p>Jede Karte wird einzeln erkannt und mit dem aktuellen Cardmarket-Preis bewertet. Am Ende siehst du den Endbetrag der Session und übernimmst alles mit einem Tipp ins Inventar.</p>
-          <div class="steps"><div><b>1 · Scannen</b>Karte flach, gut beleuchtet, in den Rahmen legen.</div><div><b>2 · Prüfen</b>Antippen, um Karte, Variante, Zustand oder Preis zu ändern.</div><div><b>3 · Abschließen</b>Endbetrag ansehen und übernehmen.</div></div>
+          <div class="steps"><div><b>Scannen</b>Karte flach und gut beleuchtet in den Rahmen legen.</div><div><b>Prüfen</b>Antippen, um Karte, Variante, Zustand oder Preis zu ändern.</div><div><b>Abschließen</b>Endbetrag ansehen und ins Inventar übernehmen.</div></div>
           ${scanButtons}
         </section>
         ${last ? `<div class="notice">Letzte Session am ${esc(dOnly(last.finishedAt))}: <strong>${last.count || 0} Karten</strong> · <strong class="mono">${money(last.total)}</strong></div>` : ""}
@@ -1560,12 +1563,16 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       title = "Einstellungen";
       const key = settings.apiKey;
       body = `<div class="stack">
+        <div class="notice stack" style="gap:10px"><strong>Darstellung</strong>
+          <div class="seg" role="group" aria-label="Darstellung">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button type="button" data-act="theme-set" data-theme="${k}" aria-pressed="${settings.theme === k}">${l}</button>`).join("")}</div>
+          <span class="fine">„Automatisch“ folgt der Einstellung deines iPhones.</span>
+        </div>
         <form class="edit" id="settingsForm">
           <label class="full">Anthropic-API-Schlüssel<input class="field mono" id="set-key" name="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${key ? "gespeichert – zum Ändern neu eingeben" : "sk-ant-…"}"></label>
           <label class="full">Modell für die Erkennung<select class="field" id="set-model" name="model">${MODELS.map(([v, l]) => `<option value="${v}" ${v === settings.model ? "selected" : ""}>${l}</option>`).join("")}</select></label>
           <p class="fine full" style="margin:0">Der Schlüssel wird nur im Browser dieses Geräts gespeichert, nicht in deinem Konto, und direkt an api.anthropic.com geschickt. Jeder Scan verbraucht API-Guthaben. Einen Schlüssel erstellst du in der <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a>. Tipp: Leg dort ein Ausgabelimit fest.</p>
           <button class="btn primary" type="submit">Speichern</button>
-          <button class="btn danger" type="button" data-act="key-del" ${key ? "" : "disabled"}>Schlüssel löschen</button>
+          <button class="btn danger" type="button" data-act="key-del" ${key ? "" : "disabled"}>Entfernen</button>
         </form>
         <div class="notice stack" style="gap:8px"><strong>Konto</strong>
           <span>Angemeldet als <strong>${esc(shownUser())}</strong>. Inventar, Sessions und Fotos sind in deinem Konto gespeichert und auf jedem Gerät verfügbar, auf dem du dich anmeldest.</span>
@@ -1729,6 +1736,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
       case "logout": closeSheet(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
+      case "theme-toggle": setTheme(isDark() ? "light" : "dark"); break;
+      case "theme-set": setTheme(el.dataset.theme); break;
       case "open-set": openSheet({ type: "set", id, filter: "missing" }); break;
       case "set-filter": state.sheet.filter = el.dataset.f; renderSheet(); break;
       case "set-range": state.sheet.min = el.dataset.min === "" ? null : Number(el.dataset.min); state.sheet.max = el.dataset.max === "" ? null : Number(el.dataset.max); renderSheet(); break;
@@ -1748,6 +1757,25 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   $("#invSearch").addEventListener("input", e => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { state.search = e.target.value; renderInv(); }, 120); });
   $("#invSort").value = state.sort;
   $("#invSort").addEventListener("change", e => { state.sort = e.target.value; settings.sort = state.sort; renderInv(); });
+
+  // ---------- appearance (light / dark / automatic) ----------
+  const darkMQ = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  const isDark = () => settings.theme === "dark" || (settings.theme === "auto" && !!(darkMQ && darkMQ.matches));
+  const ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>';
+  const ICON_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a8.5 8.5 0 1 0 11.1 11.1z"/></svg>';
+  function applyTheme() {
+    const t = settings.theme;
+    if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
+    const dark = isDark();
+    document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.setAttribute("content", dark ? "#000000" : "#F2F2F7"); m.removeAttribute("media"); });
+    const b = $("#themeBtn");
+    if (b) { b.innerHTML = dark ? ICON_SUN : ICON_MOON; b.setAttribute("aria-label", dark ? "Helle Darstellung" : "Dunkle Darstellung"); }
+  }
+  function setTheme(t) { settings.theme = t; applyTheme(); if (state.sheet && state.sheet.type === "settings") renderSheet(); }
+  if (darkMQ) { const onChange = () => { if (settings.theme === "auto") applyTheme(); }; darkMQ.addEventListener ? darkMQ.addEventListener("change", onChange) : darkMQ.addListener(onChange); }
+  applyTheme();
+  // Hairline under the navigation bar once the page scrolls, like iOS.
+  window.addEventListener("scroll", () => { const t = $("#topbar"); if (t) t.classList.toggle("scrolled", window.scrollY > 4); }, { passive: true });
 
   // ---------- boot ----------
   async function loadAll() {
