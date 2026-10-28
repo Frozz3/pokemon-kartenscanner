@@ -26,9 +26,23 @@
 
   const CONDITIONS = [["MT", "Mint"], ["NM", "Near Mint"], ["EX", "Excellent"], ["GD", "Good"], ["LP", "Light Played"], ["PL", "Played"], ["PO", "Poor"]];
   const LANGS = [["DE", "Deutsch"], ["EN", "Englisch"], ["JP", "Japanisch"], ["FR", "Französisch"], ["IT", "Italienisch"], ["ES", "Spanisch"], ["PT", "Portugiesisch"], ["KO", "Koreanisch"], ["ZH", "Chinesisch"]];
-  const MODELS = [["claude-sonnet-5-5", "Claude Sonnet 5.5 (genauer)"], ["claude-haiku-5-5", "Claude Haiku 5.5 (günstiger, schneller)"]];
+  const MODELS = [["claude-sonnet-5-5", "Genau (empfohlen)"], ["claude-haiku-5-5", "Schnell & günstig"]];
   const condLabel = c => (CONDITIONS.find(x => x[0] === c) || [c, c || "–"])[1];
   const langLabel = c => (LANGS.find(x => x[0] === c) || [c, c || "–"])[1];
+
+  // ---------- error log (local, shown in the admin area) ----------
+  const ERRLOG_KEY = "ks-errlog";
+  function logErr(where, e) {
+    try {
+      const msg = e == null ? "" : typeof e === "string" ? e : (e.message || e.code || (e.status ? "HTTP " + e.status : "") || JSON.stringify(e)).toString();
+      const list = JSON.parse(localStorage.getItem(ERRLOG_KEY) || "[]");
+      list.push({ t: Date.now(), w: String(where).slice(0, 60), m: String(msg).slice(0, 400) });
+      localStorage.setItem(ERRLOG_KEY, JSON.stringify(list.slice(-100)));
+    } catch (_) {}
+  }
+  const readErrLog = () => { try { return JSON.parse(localStorage.getItem(ERRLOG_KEY) || "[]"); } catch (_) { return []; } };
+  window.addEventListener("error", e => logErr("Fehler", (e && e.message) + (e && e.filename ? ` (${String(e.filename).split("/").pop()}:${e.lineno})` : "")));
+  window.addEventListener("unhandledrejection", e => logErr("Promise", e && e.reason));
 
   // ---------- native app (Capacitor on iOS) ----------
   // In the iOS app the same code runs inside a native shell; these hooks add haptics, status bar
@@ -73,7 +87,10 @@
     const read = (k, d) => { try { const v = localStorage.getItem("ks-" + k); return v === null ? d : v; } catch (_) { return d; } };
     const write = (k, v) => { try { if (v === null || v === "") localStorage.removeItem("ks-" + k); else localStorage.setItem("ks-" + k, v); } catch (_) {} };
     return {
-      get apiKey() { return read("apikey", ""); }, set apiKey(v) { write("apikey", v); },
+      // The API key belongs to the signed-in account on this device (others on the same phone don't use it).
+      get apiKey() { const u = window.__ksUid; return u ? read("apikey:" + u, "") : ""; },
+      set apiKey(v) { const u = window.__ksUid; if (u) write("apikey:" + u, v); },
+      get tech() { return read("tech", "0") === "1"; }, set tech(v) { write("tech", v ? "1" : "0"); },
       get model() { return read("model", MODELS[0][0]); }, set model(v) { write("model", v); },
       get sort() { return read("sort", "value"); }, set sort(v) { write("sort", v); },
       get sound() { return read("sound", "1") === "1"; }, set sound(v) { write("sound", v ? "1" : "0"); },
@@ -117,6 +134,7 @@
       put: (uid, t, objs) => run("rows", "readwrite", st => { for (const o of objs) st.put({ k: key(uid, t, o.id), t, o: clone(o) }); }).catch(() => {}),
       del: (uid, t, ids) => run("rows", "readwrite", st => { for (const id of ids) st.delete(key(uid, t, id)); }).catch(() => {}),
       getMeta: uid => run("meta", "readonly", st => st.get(uid)).catch(() => null),
+      clear: uid => Promise.all([run("rows", "readwrite", st => { st.delete(IDBKeyRange.bound(uid + "|", uid + "|\uffff")); }), run("meta", "readwrite", st => { st.delete(uid); })]).catch(() => {}),
       setMeta: (uid, m) => run("meta", "readwrite", st => { st.put(m, uid); }).catch(() => {}),
     };
   })();
@@ -210,12 +228,15 @@
     user: null, authReady: false, recovery: false, authMode: "login", authBusy: false, authMsg: null, authErr: null, authEmail: "",
     legacy: null, migrating: null, lastSync: 0,
     history: [], historyOk: true, setInfo: new Map(), setPrices: new Map(), setPricesBusy: null,
+    me: null, // { name, admin, blocked } from the server
   };
+  const isAdmin = () => !!(state.me && state.me.admin);
+  const tech = () => isAdmin() && settings.tech; // technical details only for admins who switched them on
 
   async function save(store, obj) {
     if (store === "cards") scheduleSnapshot();
     try { await Store.put(store, clone(obj)); }
-    catch (e) { toast("Speichern fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
+    catch (e) { logErr("Speichern", e); toast("Speichern fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
     const list = store === "cards" ? state.cards : store === "sessions" ? state.sessions : store === "items" ? state.items : null;
     if (list) { const i = list.findIndex(x => x.id === obj.id); if (i >= 0) list[i] = obj; else list.push(obj); }
     if (store === "sessions") state.open = state.sessions.find(s => s.status === "open") || null;
@@ -301,7 +322,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     throw { code: "bad_json" };
   }
 
-  async function identify(blob) {
+  async function identify(blob, opts = {}) {
+    const t0 = performance.now();
     const key = settings.apiKey;
     if (!key) throw { code: "no_key" };
     const data = await blobToBase64(blob);
@@ -318,20 +340,25 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       throw { code: "http", status: res.status, message };
     }
     const j = await res.json();
-    return extractJSON((j.content || []).filter(b => b.type === "text").map(b => b.text).join("\n"));
+    const u = j.usage || {};
+    if (sb && state.user) try { quiet(sb.rpc("track_usage", { p_scans: 1, p_in: u.input_tokens || 0, p_out: u.output_tokens || 0 })); } catch (_) {}
+    const text = (j.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+    if (opts.raw) opts.raw({ text, usage: u, model: j.model, ms: Math.round(performance.now() - t0) });
+    return extractJSON(text);
   }
   function aiMsg(e) {
+    if (e && e.code !== "no_key") logErr("Erkennung", e && e.code === "http" ? `HTTP ${e.status}: ${e.message || ""}` : e);
     if (!e) return "Die Erkennung ist fehlgeschlagen.";
-    if (e.code === "no_key") return "Kein API-Schlüssel eingetragen. Trag ihn in den Einstellungen ein oder such die Karte von Hand.";
+    if (e.code === "no_key") return "Für die automatische Erkennung fehlt noch dein Schlüssel. Richte ihn in den Einstellungen ein oder such die Karte von Hand.";
     if (e.code === "network") return "Keine Verbindung zur Erkennung. Prüfe dein Internet.";
     if (e.code === "bad_json") return "Die Antwort der Erkennung war unvollständig. Tippe auf „Erneut erkennen“.";
     if (e.code === "http") {
-      if (e.status === 401) return "Der API-Schlüssel ist ungültig. Prüfe ihn in den Einstellungen.";
-      if (e.status === 403) return "Der API-Schlüssel hat keine Berechtigung für dieses Modell.";
-      if (e.status === 400 && /credit|balance/i.test(e.message)) return "Dein API-Guthaben ist aufgebraucht. Lade es in der Anthropic Console auf.";
+      if (e.status === 401) return "Dein Schlüssel funktioniert nicht mehr. Trag ihn in den Einstellungen neu ein.";
+      if (e.status === 403) return "Dein Schlüssel darf die Erkennung nicht nutzen. Stell in den Einstellungen auf „Schnell & günstig“ um oder prüf den Schlüssel.";
+      if (e.status === 400 && /credit|balance/i.test(e.message)) return "Dein Guthaben bei Anthropic ist aufgebraucht. Lade es auf console.anthropic.com auf.";
       if (e.status === 429) return "Zu viele Anfragen. Warte kurz und versuch es erneut.";
       if (e.status === 529 || e.status >= 500) return "Die Erkennung ist gerade überlastet. Versuch es gleich erneut.";
-      return "Erkennung abgelehnt (" + e.status + "): " + String(e.message || "").slice(0, 120);
+      return "Die Erkennung hat nicht geklappt. Versuch es erneut.";
     }
     if (e.message === "decode") return "Das Foto ließ sich nicht öffnen.";
     return "Die Erkennung ist fehlgeschlagen.";
@@ -391,8 +418,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     return v;
   }
   function tcgMsg(e) {
-    if (e && e.code === "tcg_network") { state.marketDown = "Die Preisdatenbank TCGdex ist nicht erreichbar. Prüfe dein Internet."; return state.marketDown; }
-    if (e && e.code === "tcg_http") return "Die Preisdatenbank antwortet gerade nicht (" + e.status + "). Versuch es später erneut.";
+    logErr("Preise", e);
+    if (e && e.code === "tcg_network") { state.marketDown = "Die Preise sind gerade nicht erreichbar. Prüfe dein Internet."; return state.marketDown; }
+    if (e && e.code === "tcg_http") return "Die Preise sind gerade nicht abrufbar. Versuch es später erneut.";
     return "Der Preisabruf ist fehlgeschlagen.";
   }
   function rankBriefs(briefs, card) {
@@ -458,7 +486,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         if (!b.length && local) { list = (await tcgFetch(searchUrl(lg, nm, ""), opts.fresh)) || []; b = Array.isArray(list) ? list.filter(c => sameLocal(c.localId, local)) : []; }
         if (b.length) { briefs = b; lang = lg; break; }
       }
-      if (!briefs.length) return { error: "Karte nicht in der Preisdatenbank gefunden. Prüfe Name und Nummer oder such sie von Hand." };
+      if (!briefs.length) return { error: "Zu dieser Karte wurde kein Preis gefunden. Prüfe Name und Nummer oder such sie von Hand." };
       const pre = rankBriefs(briefs, card).slice(0, 6);
       const details = (await Promise.all(pre.map(b => tcgFetch(detailUrl(lang, b.id), opts.fresh).catch(() => null)))).filter(d => d && d.id);
       if (!details.length) return { error: "Die Kartendetails ließen sich nicht laden." };
@@ -708,7 +736,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     render();
   }
   let renderTimer = 0;
-  const renderSoon = () => { if (renderTimer) return; renderTimer = setTimeout(() => { renderTimer = 0; render(); }, 250); };
+  const renderAdminToo = () => { if (state.sheet && state.sheet.type === "admin") renderSheet(); };
+  const renderSoon = () => { if (renderTimer) return; renderTimer = setTimeout(() => { renderTimer = 0; render(); renderAdminToo(); }, 250); };
   async function refreshAll(opts = {}) {
     if (state.refreshing || !state.cards.length) return;
     const cards = state.cards.slice();
@@ -737,28 +766,57 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       }
     };
     try { await Promise.all(Array.from({ length: 5 }, worker)); await flush(true); }
-    finally { state.refreshing = null; render(); }
+    finally { state.refreshing = null; render(); renderAdminToo(); }
     if (saveErrors) toast("Preise konnten nicht gespeichert werden. Prüfe deine Internetverbindung.");
     else if (!opts.silent || state.marketDown) toast(state.marketDown || (failed ? `Preise aktualisiert. ${failed} von ${total} ohne Marktpreis.` : "Alle Preise aktualisiert."));
     scheduleSnapshot();
   }
-  async function testConnections() {
-    state.test = { running: true }; render();
+  // Checks a recognition key without spending credit (lists the available models).
+  async function checkKey(key) {
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/models?limit=1", { headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" } });
+      if (r.ok) return { ok: true };
+      let message = ""; try { message = ((await r.json()).error || {}).message || ""; } catch (_) {}
+      if (r.status === 401) return { ok: false, msg: "Dieser Schlüssel stimmt nicht. Kopier ihn bitte noch einmal vollständig." };
+      logErr("Schlüssel", `HTTP ${r.status}: ${message}`);
+      return { ok: false, soft: true, msg: "Der Schlüssel ließ sich gerade nicht prüfen." };
+    } catch (e) { logErr("Schlüssel", e); return { ok: false, soft: true, msg: "Keine Verbindung. Prüfe dein Internet." }; }
+  }
+  async function saveKey(raw) {
+    const s = state.sheet; if (!s) return;
+    const key = raw.trim().replace(/\s+/g, "");
+    if (!/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(key)) { s.err = "Das sieht nicht nach einem Schlüssel aus. Er beginnt mit „sk-ant-“ und ist ziemlich lang."; renderSheet(); return; }
+    s.busy = true; s.err = null; renderSheet();
+    const r = await checkKey(key);
+    s.busy = false;
+    if (!r.ok && !r.soft) { s.err = r.msg; renderSheet(); return; }
+    settings.apiKey = key; haptic("success");
+    toast(r.ok ? "Fertig! Die Erkennung ist bereit." : "Gespeichert. Prüfen ging gerade nicht; der erste Scan zeigt, ob alles klappt.");
+    closeSheet(); render();
+  }
+  async function saveName(raw) {
+    const s = state.sheet; if (!s) return;
+    const name = raw.trim().slice(0, 40);
+    if (!name) { s.err = "Gib einen Namen ein."; renderSheet(); return; }
+    s.busy = true; s.err = null; renderSheet();
+    try {
+      const { data, error } = await sb.rpc("me", { p_name: name }); if (error) throw error;
+      state.me = { ...(state.me || {}), ...(data || {}), name };
+      toast("Name gespeichert."); openSheet({ type: "settings" }); render();
+    } catch (e) { logErr("Profil", e); s.busy = false; s.err = "Der Name ließ sich nicht speichern."; renderSheet(); }
+  }
+  async function connResults() {
     const out = [];
+    try { const { error } = await sb.rpc("me"); out.push(error ? { ok: false, msg: "Datenbank: " + (error.message || "Fehler") } : { ok: true, msg: "Datenbank und Konto erreichbar." }); }
+    catch (e) { out.push({ ok: false, msg: "Datenbank nicht erreichbar." }); }
     try {
       const d = await tcgFetch(detailUrl("en", "swsh3-136"), true);
       const m = d && buildMarket(d, { variant: "Normal" }, "en", false);
-      out.push(d ? { ok: true, msg: `Preisdatenbank erreichbar: ${d.name} (${(d.set && d.set.name) || "?"}) kostet aktuell ${m && m.market ? money(m.market.trend ?? m.priceEur) : "–"} (Cardmarket-Trend).` } : { ok: false, msg: "Preisdatenbank antwortet, aber ohne Kartendaten." });
+      out.push(d ? { ok: true, msg: `Preise erreichbar: ${d.name} (${(d.set && d.set.name) || "?"}) ${m && m.market ? money(m.market.trend ?? m.priceEur) : "–"}` } : { ok: false, msg: "Preise: Antwort ohne Kartendaten." });
     } catch (e) { out.push({ ok: false, msg: tcgMsg(e) }); }
-    if (!settings.apiKey) out.push({ ok: false, msg: "Kein API-Schlüssel eingetragen: Erkennung per Foto ist aus, die manuelle Suche funktioniert." });
-    else {
-      try {
-        const res = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": settings.apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify({ model: settings.model, max_tokens: 5, messages: [{ role: "user", content: "Antworte nur mit OK." }] }) });
-        if (res.ok) out.push({ ok: true, msg: "API-Schlüssel funktioniert, Erkennung ist bereit." });
-        else { let message = ""; try { message = ((await res.json()).error || {}).message || ""; } catch (_) {} out.push({ ok: false, msg: aiMsg({ code: "http", status: res.status, message }) }); }
-      } catch (e) { out.push({ ok: false, msg: aiMsg({ code: "network" }) }); }
-    }
-    state.test = { results: out }; render();
+    if (!settings.apiKey) out.push({ ok: false, msg: "Auf diesem Gerät ist kein Schlüssel eingerichtet." });
+    else { const r = await checkKey(settings.apiKey); out.push(r.ok ? { ok: true, msg: "Schlüssel funktioniert." } : { ok: false, msg: r.msg }); }
+    return out;
   }
 
   async function deleteCard(id) {
@@ -1172,8 +1230,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   };
   const setNameOf = c => { const si = state.setInfo.get(setIdOf(c)); return si && si !== "error" ? si.name : c.set; };
   const subLine = c => [setNameOf(c), c.number].filter(Boolean).map((v, i, a) => (i === a.length - 1 && c.number) ? `<span class="mono">${esc(v)}</span>` : esc(v)).join(" · ") || "Set unbekannt";
-  const srcLabel = c => c.priceSource === "hand" ? "eigener Preis" : c.priceSource === "markt" ? "Cardmarket-Trend" : (num(c.priceEur) !== null ? "KI-Schätzung" : "kein Preis");
-  const priceChip = c => c.priceSource === "hand" ? '<span class="chip hand">eigener Preis</span>' : c.priceSource === "markt" ? '<span class="chip mk">Cardmarket</span>' : (num(c.priceEur) !== null ? '<span class="chip ai">KI-Schätzung</span>' : "");
+  // Where a price comes from: for everyone only when it is not the normal market price; the source name only in tech mode.
+  const srcLabel = c => c.priceSource === "hand" ? "eigener Preis" : c.priceSource === "markt" ? (tech() ? "Cardmarket-Trend" : "") : (num(c.priceEur) !== null ? "geschätzt" : "kein Preis");
+  const priceChip = c => c.priceSource === "hand" ? '<span class="chip hand">eigener Preis</span>' : c.priceSource === "markt" ? (tech() ? '<span class="chip mk">Cardmarket</span>' : "") : (num(c.priceEur) !== null ? '<span class="chip ai">geschätzt</span>' : "");
   const imgTag = (src, alt) => src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy">` : "";
   const thumbOf = (thumb, card) => thumb || officialImg(card, "low");
 
@@ -1265,13 +1324,13 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   function authMsg(e) {
     const code = (e && (e.code || e.error_code)) || "", msg = String((e && e.message) || "");
     if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "E-Mail oder Passwort ist falsch.";
-    if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) return "Dieses Konto ist noch nicht bestätigt. Schalte in Supabase unter Authentication → Sign In / Providers „Confirm email“ aus und lege das Konto neu an.";
+    if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) { logErr("Anmeldung", "Konto nicht bestätigt („Confirm email“ ausschalten)"); return "Dein Konto ist noch nicht freigeschaltet. Wende dich an den Admin der App."; }
     if (code === "user_already_exists" || code === "email_exists" || /already registered/i.test(msg)) return "Mit dieser E-Mail gibt es schon ein Konto. Melde dich an.";
     if (code === "same_password" || /should be different/i.test(msg)) return "Das neue Passwort muss sich vom alten unterscheiden.";
     if (code === "weak_password" || /password should/i.test(msg)) return "Das Passwort ist zu schwach. Nimm mindestens 8 Zeichen.";
     if (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429)) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
-    if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind für diese App deaktiviert.";
-    if (/sending.*email|confirmation email/i.test(msg)) return "Supabase will eine Bestätigungs-E-Mail schicken. Schalte unter Authentication → Sign In / Providers „Confirm email“ aus und versuch es erneut.";
+    if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind gerade nicht möglich. Versuch es später erneut.";
+    if (/sending.*email|confirmation email/i.test(msg)) { logErr("Anmeldung", "Supabase will eine Bestätigungs-Mail senden: „Confirm email“ ausschalten"); return "Das Konto lässt sich gerade nicht anlegen. Wende dich an den Admin der App."; }
     if (/fetch|network/i.test(msg)) return "Keine Verbindung zum Server. Prüfe dein Internet.";
     return msg || "Das hat nicht geklappt. Versuch es erneut.";
   }
@@ -1283,9 +1342,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const m = state.recovery ? "newpw" : (state.authMode === "reset" ? "login" : state.authMode);
     const T = {
       login: ["Anmelden", "Melde dich mit deiner E-Mail-Adresse an.", "Anmelden"],
-      signup: ["Konto erstellen", "Deine E-Mail-Adresse und dein Passwort werden nur als Hash gespeichert.", "Konto erstellen"],
+      signup: ["Konto erstellen", "Sammle deine Pokémon-Karten und sieh, was sie wert sind.", "Konto erstellen"],
       newpw: ["Neues Passwort", "Leg ein neues Passwort für dein Konto fest.", "Passwort speichern"],
     }[m];
+    const nameField = m === "signup" ? `<label class="full"><span>Dein Name <span class="muted">(optional)</span></span><input class="field" id="a-name" name="name" autocomplete="nickname" maxlength="40" value="${esc(state.authName || "")}"></label>` : "";
+    const pw2 = m === "signup" || m === "newpw" ? `<label class="full">Passwort wiederholen<input class="field" id="a-pw2" name="pw2" type="password" autocomplete="new-password" required></label>` : "";
     const user = m !== "newpw" ? `<label class="full">E-Mail<input class="field" id="a-user" name="user" type="email" inputmode="email" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(state.authEmail)}"></label>` : "";
     const pw = `<label class="full">${m === "newpw" ? "Neues Passwort (mind. 8 Zeichen)" : m === "signup" ? "Passwort (mind. 8 Zeichen)" : "Passwort"}<input class="field" id="a-pw" name="pw" type="password" autocomplete="${m === "login" ? "current-password" : "new-password"}" required></label>`;
     const links = {
@@ -1293,29 +1354,37 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       signup: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="login">Schon ein Konto? Anmelden</button>`,
       newpw: "",
     }[m];
+    // Keep what was typed when the form is drawn again (e.g. after an error message).
+    const kept = v.dataset.mode === m ? [...v.querySelectorAll("input")].map(i => [i.id, i.value]) : [];
+    v.dataset.mode = m;
     v.innerHTML = `<section class="start auth">
         <img class="auth-logo" src="icons/icon.svg" alt="" width="64" height="64">
         <h2>${T[0]}</h2><p>${T[1]}</p>
         ${state.authMsg ? `<div class="notice ok-box">${esc(state.authMsg)}</div>` : ""}
         ${state.authErr ? `<div class="banner">${esc(state.authErr)}</div>` : ""}
         <form class="edit" id="authForm" novalidate>
-          ${user}${pw}
+          ${nameField}${user}${pw}${pw2}
           <button class="btn primary full" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Einen Moment …" : T[2]}</button>
         </form>
         <div class="auth-links">${links}</div>
-        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Ein neues setzt du im Supabase-Dashboard (siehe README).</p>` : ""}
+        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Wende dich an den Admin der App, er kann dir ein vorläufiges Passwort geben.</p>` : ""}
+        ${m === "signup" ? `<p class="fine" style="margin:0">Deine E-Mail-Adresse wird nur unkenntlich gespeichert. Deshalb gibt es keinen Link zum Zurücksetzen: Merk dir dein Passwort gut.</p>` : ""}
       </section>`;
+    for (const [id, val] of kept) { const el = id && document.getElementById(id); if (el && val) el.value = val; }
     $("#authForm").onsubmit = e => { e.preventDefault(); submitAuth(new FormData(e.target), m); };
   }
 
   async function submitAuth(f, m) {
-    const raw = String(f.get("user") || "").trim(), pw = String(f.get("pw") || "");
+    const raw = String(f.get("user") || "").trim(), pw = String(f.get("pw") || ""), pw2 = f.get("pw2");
+    const name = String(f.get("name") || "").trim().slice(0, 40);
     if (m !== "newpw") state.authEmail = raw;
+    if (m === "signup") state.authName = name;
     const fail = msg => { state.authErr = msg; state.authMsg = null; render(); };
     const u = normUser(raw);
     if (m === "login" && !(EMAIL_RE.test(u) || UNAME_RE.test(u))) return fail("Gib deine E-Mail-Adresse ein.");
     if (m === "signup" && !EMAIL_RE.test(u)) return fail("Gib eine gültige E-Mail-Adresse ein.");
     if ((m === "signup" || m === "newpw") && pw.length < 8) return fail("Das Passwort braucht mindestens 8 Zeichen.");
+    if ((m === "signup" || m === "newpw") && pw2 !== null && pw !== String(pw2)) return fail("Die beiden Passwörter stimmen nicht überein.");
     if (m === "login" && !pw) return fail("Gib dein Passwort ein.");
     state.authBusy = true; state.authErr = null; state.authMsg = null; render();
     try {
@@ -1323,9 +1392,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         await signIn(u, pw);
         try { localStorage.setItem("ks-login", u); } catch (_) {}
       } else if (m === "signup") {
+        state.pendingName = name; // stored with the profile right after the account is created
         const { data, error } = await sb.auth.signUp({ email: await emailIdOf(u), password: await pwHash(pw) }); if (error) throw error;
         try { localStorage.setItem("ks-login", u); } catch (_) {}
-        if (!data.session) { state.authMode = "login"; state.authErr = "Das Konto wurde angelegt, wartet aber auf eine E-Mail-Bestätigung, die nie ankommt. Schalte in Supabase „Confirm email“ aus, lösche den Nutzer und registriere dich erneut."; }
+        state.authName = "";
+        if (!data.session) { state.authMode = "login"; logErr("Registrierung", "Konto wartet auf E-Mail-Bestätigung (Confirm email in Supabase ausschalten)"); state.authErr = "Dein Konto wurde angelegt, ist aber noch nicht freigeschaltet. Wende dich an den Admin der App."; }
       } else if (m === "newpw") {
         const { error } = await sb.auth.updateUser({ password: await pwHash(pw) }); if (error) throw error;
         state.recovery = false; toast("Neues Passwort gespeichert.");
@@ -1379,7 +1450,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const v = $("#view-scan");
     if (state.problem) { v.innerHTML = `<div class="notice"><strong>Speicher nicht verfügbar.</strong><br>${esc(state.problem)}</div>`; return; }
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
-    const keyBanner = !settings.apiKey ? `<div class="banner"><span>Für die Erkennung per Foto brauchst du einen Anthropic-API-Schlüssel. Ohne Schlüssel kannst du Karten über die Suche hinzufügen.</span><button class="btn small" type="button" data-act="settings">Schlüssel eintragen</button></div>` : "";
+    const keyBanner = !settings.apiKey ? `<div class="banner info"><span>Damit die App Karten automatisch erkennt, richte einmalig die Erkennung ein. Bis dahin kannst du Karten über „Suchen“ hinzufügen.</span><button class="btn small" type="button" data-act="key-setup">Einrichten</button></div>` : "";
     const down = (state.marketDown ? `<div class="banner">${esc(state.marketDown)}</div>` : "") + legacyBanner();
     const scanButtons = `
       <div class="scanrow">
@@ -1389,21 +1460,15 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       </div>`;
     if (!state.open) {
       const last = state.sessions.filter(s => s.status === "done").sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))[0];
-      const t = state.test;
+      const hello = greetName() ? `Hallo ${esc(greetName())}!` : "Neue Scan-Session";
       v.innerHTML = `${keyBanner}${down}
         <section class="start">
-          <div class="eyebrow">Neue Scan-Session</div>
-          <h2>Karten scannen, Marktwert sehen, ins Inventar legen</h2>
-          <p>Jede Karte wird einzeln erkannt und mit dem aktuellen Cardmarket-Preis bewertet. Am Ende siehst du den Endbetrag der Session und übernimmst alles mit einem Tipp ins Inventar.</p>
-          <div class="steps"><div><b>Scannen</b>Karte flach und gut beleuchtet in den Rahmen legen.</div><div><b>Prüfen</b>Antippen, um Karte, Variante, Zustand oder Preis zu ändern.</div><div><b>Abschließen</b>Endbetrag ansehen und ins Inventar übernehmen.</div></div>
+          <div class="eyebrow">${hello}</div>
+          <h2>Karten scannen und sehen, was sie wert sind</h2>
+          ${state.sessions.some(x => x.status === "done") ? "" : `<div class="steps"><div><b>Scannen</b>Karte gut beleuchtet in den Rahmen halten.</div><div><b>Prüfen</b>Antippen, falls etwas nicht stimmt.</div><div><b>Abschließen</b>Gesamtwert sehen und ins Inventar legen.</div></div>`}
           ${scanButtons}
         </section>
-        ${last ? `<div class="notice">Letzte Session am ${esc(dOnly(last.finishedAt))}: <strong>${last.count || 0} Karten</strong> · <strong class="mono">${money(last.total)}</strong></div>` : ""}
-        <section class="notice stack" style="gap:8px">
-          <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><div><strong>Preisquelle:</strong> Cardmarket-Trendpreis aus der Datenbank TCGdex.</div>
-          <button class="btn small" type="button" data-act="test" ${t && t.running ? "disabled" : ""}>${t && t.running ? "Teste …" : "Verbindung testen"}</button></div>
-          ${t && t.results ? t.results.map(r => `<div class="${r.ok ? "ok-txt" : "bad-txt"}">${esc(r.msg)}</div>`).join("") : ""}
-        </section>`;
+        ${last ? `<div class="notice">Letzte Session am ${esc(dOnly(last.finishedAt))}: <strong>${last.count || 0} Karten</strong> · <strong class="mono">${money(last.total)}</strong></div>` : ""}`;
       return;
     }
     const items = openItems();
@@ -1420,7 +1485,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         </div>
         ${scanButtons}
       </section>
-      ${(state.dupView = sessionDupes(), "")}${items.length ? `<ul class="list">${items.slice().reverse().map(rowHTML).join("")}</ul><p class="fine" style="margin:-6px 0 0">Doppelt gescannt? Karte nach rechts wischen, um sie zu entfernen.</p>` : `<div class="empty">Noch keine Karte in dieser Session. Tippe auf „Karte scannen“.</div>`}
+      ${(state.dupView = sessionDupes(), "")}${items.length ? `<ul class="list">${items.slice().reverse().map(rowHTML).join("")}</ul><p class="fine" style="margin:-6px 0 0">Zum Entfernen eine Karte nach rechts wischen.</p>` : `<div class="empty">Noch keine Karte in dieser Session. Tippe auf „Karte scannen“.</div>`}
       <div class="session-foot">
         <button class="btn primary" type="button" data-act="finish" ${ok.length && !pending ? "" : "disabled"}>${pending ? "Warte auf Erkennung …" : "Session abschließen"}</button>
         <button class="btn ghost danger" type="button" data-act="discard">Verwerfen</button>
@@ -1453,9 +1518,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const noMarket = c.priceSource !== "markt" && c.priceSource !== "hand";
     return `<li class="row" data-act="edit-item" data-id="${esc(it.id)}" tabindex="0" role="button" aria-label="${esc(c.name)} bearbeiten">${mini}
       <div style="min-width:0"><div class="nm">${esc(c.name)}</div><div class="sub">${subLine(c)}</div>
-      <div class="chips">${dupChips(state.dupView && state.dupView.get(it.id))}${lowConf ? '<span class="chip warn">unsicher – prüfen</span>' : ""}${c.market && c.market.ambiguous ? '<span class="chip warn">Set prüfen</span>' : ""}${c.condition && c.condition !== "NM" ? `<span class="chip">${esc(c.condition)}</span>` : ""}${c.variant && c.variant !== "Normal" ? `<span class="chip">${esc(c.variant)}</span>` : ""}${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ""}</div>
+      <div class="chips">${dupChips(state.dupView && state.dupView.get(it.id))}${lowConf ? '<span class="chip warn">unsicher – prüfen</span>' : ""}${c.market && c.market.ambiguous ? '<span class="chip warn">bitte prüfen</span>' : ""}${c.condition && c.condition !== "NM" ? `<span class="chip">${esc(c.condition)}</span>` : ""}${c.variant && c.variant !== "Normal" ? `<span class="chip">${esc(c.variant)}</span>` : ""}${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ""}</div>
       ${noMarket && c.marketError ? `<div class="erractions"><span class="fine">${esc(c.marketError)}</span><button class="btn small" type="button" data-act="search-item" data-id="${esc(it.id)}">Karte suchen</button></div>` : ""}</div>
-      <div class="px">${money(num(c.priceEur) === null ? null : c.priceEur * (it.qty || 1))}<small>${(it.qty || 1) > 1 ? `${it.qty} × ${money(c.priceEur)}` : esc(srcLabel(c))}</small></div></li>`;
+      <div class="px">${money(num(c.priceEur) === null ? null : c.priceEur * (it.qty || 1))}${(it.qty || 1) > 1 ? `<small>${it.qty} × ${money(c.priceEur)}</small>` : srcLabel(c) ? `<small>${esc(srcLabel(c))}</small>` : ""}</div></li>`;
   }
 
   function renderInv() {
@@ -1472,8 +1537,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const ki = cards.filter(c => c.priceSource !== "markt" && c.priceSource !== "hand").length;
     const rf = state.refreshing;
     $("#invPrices").innerHTML = cards.length ? `<div class="pricebar">
-      <div class="fine">${mk.length} von ${cards.length} mit Cardmarket-Preis${isFinite(oldest) ? ` · ältester Stand ${dOnly(oldest)}` : ""}${ki ? ` · ${ki} ohne Marktpreis` : ""}</div>
-      <button class="btn small" type="button" data-act="refresh-all" ${rf ? "disabled" : ""}>${rf ? `Aktualisiere ${rf.done}/${rf.total} …` : "Alle Preise aktualisieren"}</button></div>` : "";
+      <div class="fine">${tech() ? `${mk.length} von ${cards.length} mit Cardmarket-Preis${isFinite(oldest) ? ` · ältester Stand ${dOnly(oldest)}` : ""}${ki ? ` · ${ki} ohne Marktpreis` : ""}` : ki ? `${ki} Karte${ki === 1 ? "" : "n"} ohne Marktpreis` : ""}</div>
+      <button class="btn small" type="button" data-act="refresh-all" ${rf ? "disabled" : ""}>${rf ? `Aktualisiere ${rf.done}/${rf.total} …` : "Preise aktualisieren"}</button></div>` : "";
     const q = state.search.trim().toLowerCase();
     const list = cards.filter(c => !q || [c.name, c.nameEn, c.set, c.setCode, c.number, c.rarity, c.pokemonType].some(v => String(v || "").toLowerCase().includes(q)));
     const val = c => (num(c.priceEur) || 0) * (c.qty || 1);
@@ -1484,13 +1549,13 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       set: (a, b) => String(a.set || "").localeCompare(String(b.set || ""), "de") || String(a.number || "").localeCompare(String(b.number || ""), "de", { numeric: true }),
     }[state.sort] || (() => 0));
     const g = $("#invGrid");
-    if (!cards.length) { g.innerHTML = `<div class="empty"><div>Dein Inventar ist noch leer. Scanne Karten in einer Session und schließe sie ab, dann erscheinen sie hier mit Bild und Marktwert.</div><button class="btn primary" type="button" data-tab="scan">Zur Scan-Session</button></div>`; return; }
+    if (!cards.length) { g.innerHTML = `<div class="empty"><div>Dein Inventar ist noch leer. Scanne deine ersten Karten, dann erscheinen sie hier mit Bild und Wert.</div><button class="btn primary" type="button" data-tab="scan">Zur Scan-Session</button></div>`; return; }
     if (!list.length) { g.innerHTML = `<div class="empty">Keine Karte passt zu „${esc(state.search)}“.</div>`; return; }
     g.innerHTML = `<div class="grid">${list.map(c => `
       <button class="tile" type="button" data-act="detail" data-id="${esc(c.id)}">
         <div class="art">${imgTag(thumbOf(c.thumb, c), c.name)}${(c.qty || 1) > 1 ? `<span class="qty">×${c.qty}</span>` : ""}</div>
         <div class="info"><div class="nm">${esc(c.name)}</div><div class="num">${esc([c.setCode || c.set, c.number].filter(Boolean).join(" · ") || "–")}</div>
-        <div class="price">${money(c.priceEur)}${c.priceSource === "markt" ? "" : c.priceSource === "hand" ? '<span class="src">eigen</span>' : (num(c.priceEur) !== null ? '<span class="src">KI</span>' : "")}</div></div>
+        <div class="price">${money(c.priceEur)}${c.priceSource === "markt" ? "" : c.priceSource === "hand" ? '<span class="src">eigen</span>' : (num(c.priceEur) !== null ? '<span class="src">geschätzt</span>' : "")}</div></div>
       </button>`).join("")}</div>`;
   }
 
@@ -1500,7 +1565,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
     const ids = [...new Set(state.cards.map(setIdOf).filter(Boolean))];
     const unassigned = state.cards.filter(c => !setIdOf(c)).length;
-    if (!ids.length) { v.innerHTML = `<div class="empty">Noch keine Sets. Sobald Karten mit Marktpreis im Inventar sind, siehst du hier, wie viele Karten dir pro Set fehlen.</div>`; return; }
+    if (!ids.length) { v.innerHTML = `<div class="empty">Noch keine Sets. Sobald Karten in deinem Inventar sind, siehst du hier, wie viele dir pro Set noch fehlen.</div>`; return; }
     ensureSets(ids);
     const sort = settings.setSort;
     const rows = ids.map(id => {
@@ -1531,8 +1596,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     v.innerHTML = `<div class="toolbar"><div class="fine" style="align-self:center">${ids.length} Set${ids.length === 1 ? "" : "s"} in deiner Sammlung</div>
         <select class="field" id="setSort" aria-label="Sets sortieren">${SET_SORTS.map(([k, l]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select></div>
       <div class="setlist">${rows.map(r => r.html).join("")}</div>
-      ${unassigned ? `<p class="fine">${unassigned} Karte${unassigned === 1 ? " ist" : "n sind"} noch keinem Set zugeordnet (ohne Marktpreis). Ordne sie in der Kartenansicht über „Andere Karte zuordnen“ zu.</p>` : ""}
-      <p class="fine">Set- und Kartennamen auf Deutsch, soweit TCGdex sie kennt; sonst Englisch.</p>`;
+      ${unassigned ? `<p class="fine">${unassigned} Karte${unassigned === 1 ? " ist" : "n sind"} noch keinem Set zugeordnet. Öffne sie im Inventar und tippe auf „Andere Karte wählen“.</p>` : ""}
+      ${tech() ? `<p class="fine">Set- und Kartennamen auf Deutsch, soweit TCGdex sie kennt; sonst Englisch.</p>` : ""}`;
     $("#setSort").onchange = e => { settings.setSort = e.target.value; renderSets(); };
   }
 
@@ -1540,7 +1605,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const v = $("#view-value");
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
     if (!state.historyOk) {
-      v.innerHTML = `<div class="notice stack" style="gap:8px"><strong>Wertentwicklung noch nicht eingerichtet</strong><span>In deiner Datenbank fehlt die Tabelle für den Verlauf. Führe im Supabase SQL Editor einmal den Abschnitt „history“ aus supabase/schema.sql aus und lade die App neu.</span></div>`;
+      v.innerHTML = `<div class="notice">Die Wertentwicklung ist gerade nicht verfügbar.${isAdmin() ? " (Admin: In der Datenbank fehlt die Tabelle „history“. supabase/schema.sql ausführen.)" : ""}</div>`;
       return;
     }
     const total = state.cards.reduce((t, c) => t + (num(c.priceEur) || 0) * (c.qty || 1), 0);
@@ -1574,11 +1639,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         ${pts.length >= 2 ? lineChart(pts, { label: "Wert der Sammlung über Zeit" }) : `<p class="fine" style="margin:0">Ab heute speichert die App jeden Tag den Wert deiner Sammlung. Morgen siehst du hier die erste Kurve.</p>`}
       </section>
       <div class="stats stats2">${card("7 Tage", b7)}${card("30 Tage", b30)}</div>
-      ${base ? `<div class="notice">Davon durch Preisänderungen am Markt: <strong class="${deltaCls(marketDelta)}">${signed(marketDelta)}</strong> seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))}. Der Rest kommt von neu hinzugefügten oder entfernten Karten.</div>` : ""}
+      ${base && tech() ? `<div class="notice">Davon durch Preisänderungen am Markt: <strong class="${deltaCls(marketDelta)}">${signed(marketDelta)}</strong> seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))}. Der Rest kommt von neu hinzugefügten oder entfernten Karten.</div>` : ""}
       ${up.length ? `<h3 class="sec">Gewinner</h3><ul class="movers">${up.map(mv).join("")}</ul>` : ""}
       ${down.length ? `<h3 class="sec">Verlierer</h3><ul class="movers">${down.map(mv).join("")}</ul>` : ""}
       ${base && !movers.length ? `<p class="fine">Seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))} haben sich die Preise deiner Karten nicht verändert.</p>` : ""}
-      <p class="fine">Die Preise werden einmal am Tag beim Öffnen der App automatisch aktualisiert (Cardmarket-Trend über TCGdex).</p>`;
+      <p class="fine">Die Preise werden einmal am Tag automatisch aktualisiert.</p>`;
   }
 
   function renderHist() {
@@ -1586,9 +1651,254 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const done = state.sessions.filter(s => s.status === "done").sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0));
     if (!done.length) { v.innerHTML = `<div class="empty">Noch keine abgeschlossene Session. Hier steht später jede Session mit Datum, Kartenzahl und Endbetrag.</div>`; return; }
     const sum = done.reduce((s, x) => s + (x.total || 0), 0);
-    v.innerHTML = `<div class="notice">${done.length} Session${done.length === 1 ? "" : "s"} · zusammen <strong class="mono">${money(sum)}</strong> zum Zeitpunkt des Scans</div>` +
+    v.innerHTML = `<div class="notice">${done.length} Session${done.length === 1 ? "" : "s"} · zusammen <strong class="mono">${money(sum)}</strong> beim Scannen</div>` +
       done.map(s => `<details class="hist"><summary><div><div class="t">${esc(dt(s.finishedAt))}</div><div class="sub">${s.count || 0} Karte${s.count === 1 ? "" : "n"}</div></div><div class="px">${money(s.total)}</div></summary>
-        <ul>${(s.summary || []).map(x => `<li><span>${esc(x.name)}${x.qty > 1 ? ` ×${x.qty}` : ""} <span class="muted">${esc([x.set, x.number].filter(Boolean).join(" · "))}${x.priceSource && x.priceSource !== "markt" ? ` · ${x.priceSource === "hand" ? "eigen" : "KI"}` : ""}</span></span><span class="mono">${money(num(x.priceEur) === null ? null : x.priceEur * (x.qty || 1))}</span></li>`).join("")}</ul></details>`).join("");
+        <ul>${(s.summary || []).map(x => `<li><span>${esc(x.name)}${x.qty > 1 ? ` ×${x.qty}` : ""} <span class="muted">${esc([x.set, x.number].filter(Boolean).join(" · "))}${x.priceSource && x.priceSource !== "markt" ? ` · ${x.priceSource === "hand" ? "eigen" : "geschätzt"}` : ""}</span></span><span class="mono">${money(num(x.priceEur) === null ? null : x.priceEur * (x.qty || 1))}</span></li>`).join("")}</ul></details>`).join("");
+  }
+
+  // ---------- admin area (only accounts listed in public.admins; the server checks this too) ----------
+  const ADMIN_TABS = [["users", "Nutzer"], ["tests", "Tests"], ["tech", "Technik"], ["care", "Wartung"]];
+  const ago = ts => {
+    if (!ts) return "nie";
+    const t = typeof ts === "number" ? ts : Date.parse(ts), m = Math.round((Date.now() - t) / 60e3);
+    if (m < 2) return "gerade eben"; if (m < 60) return `vor ${m} Min.`;
+    const h = Math.round(m / 60); if (h < 24) return `vor ${h} Std.`;
+    const d = Math.round(h / 24); return d < 30 ? `vor ${d} Tag${d === 1 ? "" : "en"}` : dOnly(t);
+  };
+  const loginLabel = l => {
+    l = String(l || "");
+    if (/@kartenscanner\.invalid$/.test(l)) return l.replace(/@kartenscanner\.invalid$/, "").slice(0, 12) + "…";
+    const [a, d] = l.split("@"); return d ? a.slice(0, 2) + "•••@" + d : l;
+  };
+  const nfmt = n => new Intl.NumberFormat("de-DE").format(Number(n) || 0);
+  const fact = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`; // values are escaped by the caller
+
+  function adminBody(s) {
+    const tabs = `<div class="seg seg4" role="group" aria-label="Bereich">${ADMIN_TABS.map(([k, l]) => `<button type="button" data-act="admin-tab" data-pane="${k}" aria-pressed="${s.tab === k}">${l}</button>`).join("")}</div>`;
+    const inner = s.tab === "users" ? (s.sel ? adminUserDetail(s) : adminUserList(s)) : s.tab === "tests" ? adminTests(s) : s.tab === "tech" ? adminTech() : adminCare(s);
+    return `<div class="stack admin">${tabs}${inner}</div>`;
+  }
+  function adminAfterRender(s) {
+    if (s.tab === "users" && !s.users && !s.usersLoading && !s.usersErr) adminLoadUsers();
+    if (s.tab === "tests" && !s.diag && !s.diagBusy) adminDiag();
+  }
+  function adminUserList(s) {
+    if (s.usersErr) return `<div class="banner">${esc(s.usersErr)}</div><button class="btn" type="button" data-act="admin-reload">Erneut versuchen</button>`;
+    if (!s.users) return `<div class="notice">Wird geladen …</div>`;
+    const us = s.users, active = us.filter(u => u.last_seen && Date.now() - Date.parse(u.last_seen) < 30 * 864e5).length;
+    const sum = k => us.reduce((t, u) => t + (Number(u[k]) || 0), 0);
+    const stat = (l, v) => `<div class="stat"><div class="eyebrow">${l}</div><div class="v">${v}</div></div>`;
+    return `<div class="stats stats2">${stat("Konten", nfmt(us.length))}${stat("Aktiv (30 Tage)", nfmt(active))}${stat("Scans gesamt", nfmt(sum("scans")))}${stat("Karten gesamt", nfmt(sum("card_qty")))}</div>
+      <ul class="list ulist">${us.map(u => `<li><button class="urow" type="button" data-act="admin-user" data-id="${esc(u.user_id)}">
+        <div class="avatar" aria-hidden="true">${esc(((u.name || "?").trim().charAt(0) || "?").toUpperCase())}</div>
+        <div style="min-width:0"><div class="nm">${esc(u.name || "Ohne Namen")}${u.user_id === uidNow() ? ' <span class="badge">Du</span>' : ""}${u.admin ? ' <span class="badge">Admin</span>' : ""}${u.blocked ? ' <span class="badge bad">Gesperrt</span>' : ""}</div>
+        <div class="sub">${nfmt(u.card_qty)} Karten · ${money(Number(u.value))} · ${nfmt(u.scans)} Scans</div></div>
+        <div class="px"><small>${esc(ago(u.last_seen || u.last_sign_in_at))}</small></div></button></li>`).join("")}</ul>
+      <p class="gf">Namen geben die Nutzer selbst an; E-Mail-Adressen sind nur unkenntlich gespeichert. Fremde Karten siehst du nicht, nur Zahlen.</p>
+      <button class="btn" type="button" data-act="admin-reload">Aktualisieren</button>`;
+  }
+  function adminUserDetail(s) {
+    const u = (s.users || []).find(x => x.user_id === s.sel);
+    if (!u) return `<div class="notice">Konto nicht gefunden.</div><button class="btn" type="button" data-act="admin-back">‹ Alle Nutzer</button>`;
+    const self = u.user_id === uidNow();
+    return `<button class="btn ghost small back" type="button" data-act="admin-back">‹ Alle Nutzer</button>
+      <div class="dtitle"><h2>${esc(u.name || "Ohne Namen")}</h2><div class="sub">${esc(loginLabel(u.login))}${u.admin ? " · Admin" : ""}${u.blocked ? ' · <span class="bad-txt">gesperrt</span>' : ""}</div></div>
+      <dl class="facts">
+        ${fact("Konto seit", esc(dOnly(Date.parse(u.created_at))))}
+        ${fact("Zuletzt aktiv", esc(ago(u.last_seen || u.last_sign_in_at)))}
+        ${fact("Karten", `${nfmt(u.card_qty)} (${nfmt(u.cards)} verschiedene)`)}
+        ${fact("Sammlungswert", money(Number(u.value)))}
+        ${fact("Sessions", nfmt(u.sessions))}
+        ${fact("Scans", `${nfmt(u.scans)} (30 Tage: ${nfmt(u.scans_30d)})`)}
+        ${fact("KI-Tokens", `${nfmt(u.input_tokens)} rein · ${nfmt(u.output_tokens)} raus`)}
+      </dl>
+      ${s.msg ? `<div class="notice ok-box">${esc(s.msg)}</div>` : ""}${s.err ? `<div class="banner">${esc(s.err)}</div>` : ""}
+      ${self ? `<p class="gf">Das ist dein eigenes Konto.</p>` : `
+      <form class="edit" id="adminPwForm"><label class="full">Vorläufiges Passwort setzen<input class="field" name="pw" minlength="8" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="mind. 8 Zeichen" required></label>
+        <button class="btn full" type="submit" ${s.busy ? "disabled" : ""}>Passwort setzen</button></form>
+      <div class="actions">
+        <button class="btn" type="button" data-act="${u.blocked ? "admin-unblock" : "admin-block"}" data-id="${esc(u.user_id)}" ${s.busy ? "disabled" : ""}>${u.blocked ? "Entsperren" : "Sperren"}</button>
+        <button class="btn danger" type="button" data-act="${s.confirmDel ? "admin-delete-yes" : "admin-delete"}" data-id="${esc(u.user_id)}" ${s.busy ? "disabled" : ""}>${s.confirmDel ? "Endgültig löschen?" : "Konto löschen"}</button>
+      </div>
+      <p class="gf">Sperren meldet das Konto sofort ab, die Daten bleiben erhalten. Löschen entfernt das Konto mit allen Karten und Fotos endgültig.</p>`}`;
+  }
+  function adminTests(s) {
+    const c = s.conn, t = s.scan, q = s.price, d = s.diag;
+    const langs = [["DE", "Deutsch"], ["EN", "Englisch"], ["FR", "Französisch"], ["IT", "Italienisch"], ["ES", "Spanisch"], ["JP", "Japanisch"]];
+    return `<section><h3 class="gh">Verbindungen</h3><div class="group pad stack" style="gap:8px">
+        ${c && c.results ? c.results.map(r => `<div class="${r.ok ? "ok-txt" : "bad-txt"}">${r.ok ? "✓" : "✕"} ${esc(r.msg)}</div>`).join("") : `<div class="fine">Prüft Datenbank, Preise und den Schlüssel auf diesem Gerät.</div>`}
+        <div><button class="btn small" type="button" data-act="admin-conn" ${c && c.running ? "disabled" : ""}>${c && c.running ? "Teste …" : "Jetzt testen"}</button></div></div></section>
+      <section><h3 class="gh">Test-Scan</h3><div class="group pad stack" style="gap:8px">
+        <div class="fine">Erkennt ein Foto, ohne es zu speichern, und zeigt die Rohdaten.</div>
+        <div><button class="btn small" type="button" data-act="admin-scan" ${t && t.running ? "disabled" : ""}>${t && t.running ? esc(t.stage || "Läuft …") : "Foto wählen"}</button></div>
+        ${t && t.error ? `<div class="bad-txt">${esc(t.error)}</div>` : ""}
+        ${t && t.done ? `<dl class="facts">${fact("Dauer", `${nfmt(t.ms)} ms`)}${fact("Modell", esc(t.model || "–"))}${fact("Tokens", `${nfmt(t.usage.input_tokens)} rein · ${nfmt(t.usage.output_tokens)} raus`)}${fact("Erkannt", esc([t.card.name, t.card.set, t.card.number].filter(Boolean).join(" · ") || "–"))}${fact("Preis", t.market && t.market.market ? `${money(t.market.priceEur)} · ${esc([t.market.market.matchSet, t.market.market.matchLocal].filter(Boolean).join(" "))}` : esc((t.market && t.market.error) || "kein Treffer"))}</dl>` : ""}
+        ${t && t.text ? `<div class="fine">Antwort der KI</div><pre class="sqlbox raw">${esc(t.text)}</pre>` : ""}
+      </div></section>
+      <section><h3 class="gh">Preis-Abfrage</h3><div class="group pad">
+        <form class="edit" id="adminPriceForm">
+          <label class="full">Kartenname<input class="field" name="q" value="${esc((q && q.q) || "")}" placeholder="z. B. Glurak" required></label>
+          <label>Nummer<input class="field mono" name="n" value="${esc((q && q.n) || "")}" placeholder="136/189"></label>
+          <label>Sprache<select class="field" name="lang">${langs.map(([v, l]) => `<option value="${v}" ${((q && q.lang) || "DE") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          <button class="btn small full" type="submit" ${q && q.running ? "disabled" : ""}>${q && q.running ? "Suche …" : "Abfragen"}</button>
+        </form>
+        ${q && q.res ? `<pre class="sqlbox raw">${esc(q.res)}</pre>` : ""}
+      </div></section>
+      <section><h3 class="gh">Diagnose</h3>${d ? `<dl class="facts">${d.map(([k, v]) => fact(esc(k), esc(v))).join("")}</dl>` : `<div class="notice">Wird ermittelt …</div>`}</section>`;
+  }
+  function adminTech() {
+    const cards = state.cards, mk = cards.filter(c => c.priceSource === "markt" && c.market);
+    const oldest = mk.reduce((m, c) => Math.min(m, c.market.updated || c.market.fetchedAt || Infinity), Infinity);
+    const noMk = cards.filter(c => c.priceSource !== "markt" && c.priceSource !== "hand").length, hand = cards.filter(c => c.priceSource === "hand").length;
+    const noSet = cards.filter(c => !setIdOf(c)).length, amb = cards.filter(c => c.market && c.market.ambiguous).length;
+    let host = "–"; try { host = new URL(CFG.supabaseUrl).host; } catch (_) {}
+    return `<div class="group"><button class="cell" type="button" role="switch" aria-checked="${settings.tech}" data-act="set-tech"><span>Technik-Details in der App</span><span class="switch" aria-hidden="true"></span></button></div>
+      <p class="gf" style="margin-top:-8px">Zeigt Preisquelle, Zuordnung, KI-Sicherheit und Zusatzfelder überall in der App, nur für dich.</p>
+      <section><h3 class="gh">Preise (dein Inventar)</h3><dl class="facts">
+        ${fact("Mit Marktpreis", `${nfmt(mk.length)} von ${nfmt(cards.length)}`)}${fact("Ältester Preisstand", isFinite(oldest) ? esc(dOnly(oldest)) : "–")}
+        ${fact("Ohne Marktpreis", nfmt(noMk))}${fact("Eigener Preis", nfmt(hand))}${fact("Ohne Set", nfmt(noSet))}${fact("Mehrdeutig zugeordnet", nfmt(amb))}
+        ${fact("Quelle", "Cardmarket-Trend über TCGdex")}</dl></section>
+      <section><h3 class="gh">Daten</h3><dl class="facts">
+        ${fact("Datenbank", esc(host))}${fact("Letzter Abgleich", state.lastSync ? esc(ago(state.lastSync)) : "–")}
+        ${fact("Karten · Sessions · Scans", `${nfmt(cards.length)} · ${nfmt(state.sessions.length)} · ${nfmt(state.items.length)}`)}
+        ${fact("Verlaufspunkte", nfmt(state.history.length))}${fact("Erkennungsmodell", esc(settings.model))}
+        ${fact("App", NATIVE ? `iOS-App, Build ${esc(app.build || "–")}` : "Web-App")}
+        ${fact("Profil-Funktionen", state.me && state.me.missing ? '<span class="bad-txt">fehlen, schema.sql ausführen</span>' : "ok")}</dl></section>`;
+  }
+  function adminCare(s) {
+    const rf = state.refreshing, log = readErrLog().slice().reverse();
+    return `<div class="group">
+        <button class="cell action" type="button" data-act="refresh-all" ${rf ? "disabled" : ""}>${rf ? `Aktualisiere ${rf.done}/${rf.total} …` : "Alle Preise neu laden"}</button>
+        <button class="cell action" type="button" data-act="admin-clear-cache" ${s.clearing ? "disabled" : ""}>${s.clearing ? "Wird neu geladen …" : "Zwischenspeicher leeren und neu laden"}</button>
+        <button class="cell action" type="button" data-act="export">Backup exportieren</button></div>
+      <p class="gf" style="margin-top:-8px">Betrifft dein Konto auf diesem Gerät.</p>
+      <section><h3 class="gh">Fehlerprotokoll (dieses Gerät)</h3>
+        ${log.length ? `<ul class="list loglist">${log.slice(0, 40).map(x => `<li><div class="sub">${esc(new Date(x.t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }))} · ${esc(x.w)}</div><div class="logmsg">${esc(x.m)}</div></li>`).join("")}</ul>
+          <div class="actions" style="margin-top:10px"><button class="btn small" type="button" data-act="admin-log-copy">Kopieren</button><button class="btn small danger" type="button" data-act="admin-log-clear">Leeren</button></div>` : `<div class="notice">Keine Fehler aufgezeichnet.</div>`}</section>`;
+  }
+  async function adminLoadUsers(force) {
+    const s = state.sheet; if (!s || s.type !== "admin" || s.usersLoading || (s.users && !force)) return;
+    s.usersLoading = true; s.usersErr = null; if (force) s.users = null; renderSheet();
+    try { const { data, error } = await sb.rpc("admin_users"); if (error) throw error; s.users = data || []; }
+    catch (e) {
+      logErr("Admin", e);
+      const m = String((e && (e.message || e.code)) || "");
+      s.usersErr = /forbidden/i.test(m) ? "Für diesen Bereich fehlen dir die Admin-Rechte." : /PGRST202|function|schema cache|does not exist/i.test(m) ? "Die Admin-Funktionen fehlen in der Datenbank. Führe supabase/schema.sql im SQL Editor aus." : "Die Nutzerliste ließ sich nicht laden.";
+    }
+    s.usersLoading = false; if (state.sheet === s) renderSheet();
+  }
+  const rpcErr = e => { const m = String((e && e.message) || ""); return m && m.length < 120 && !/^(forbidden|permission)/i.test(m) ? m : "Das hat nicht geklappt."; };
+  async function adminBlock(target, on) {
+    const s = state.sheet; s.busy = true; s.msg = s.err = null; renderSheet();
+    try {
+      const { error } = await sb.rpc("admin_set_blocked", { p_user: target, p_blocked: on }); if (error) throw error;
+      const u = (s.users || []).find(x => x.user_id === target); if (u) u.blocked = on;
+      s.msg = on ? "Konto gesperrt und abgemeldet." : "Konto entsperrt.";
+    } catch (e) { logErr("Admin", e); s.err = rpcErr(e); }
+    s.busy = false; if (state.sheet === s) renderSheet();
+  }
+  async function adminSetPassword(pw) {
+    const s = state.sheet; if (!s || !s.sel) return;
+    if (pw.length < 8) { s.err = "Das Passwort braucht mindestens 8 Zeichen."; s.msg = null; renderSheet(); return; }
+    s.busy = true; s.msg = s.err = null; renderSheet();
+    try {
+      // Same on-device hashing as the login, so the person can sign in with exactly this password.
+      const { error } = await sb.rpc("admin_set_password", { p_user: s.sel, p_hash: await pwHash(pw) }); if (error) throw error;
+      const u = (s.users || []).find(x => x.user_id === s.sel);
+      s.msg = `Passwort gesetzt. Gib es ${u && u.name ? u.name : "der Person"} weiter; ändern geht danach unter Einstellungen → Passwort ändern.`;
+    } catch (e) { logErr("Admin", e); s.err = rpcErr(e); }
+    s.busy = false; if (state.sheet === s) renderSheet();
+  }
+  async function adminDelete(target) {
+    const s = state.sheet; s.busy = true; s.msg = s.err = null; renderSheet();
+    try {
+      // Photos first (the database cannot delete files), then the account with all its rows.
+      const store = sb.storage.from(BUCKET);
+      for (let round = 0; round < 50; round++) {
+        const { data, error } = await store.list(target, { limit: 100 });
+        if (error) throw error;
+        const files = (data || []).filter(f => f && f.name && f.name !== ".emptyFolderPlaceholder").map(f => `${target}/${f.name}`);
+        if (!files.length) break;
+        const r = await store.remove(files); if (r.error) throw r.error;
+      }
+      const { error } = await sb.rpc("admin_delete_user", { p_user: target }); if (error) throw error;
+      s.users = (s.users || []).filter(x => x.user_id !== target); s.sel = null; toast("Konto gelöscht.");
+    } catch (e) { logErr("Admin", e); s.err = rpcErr(e); }
+    s.busy = false; s.confirmDel = false; if (state.sheet === s) renderSheet();
+  }
+  async function adminConn() {
+    const s = state.sheet; if (!s) return;
+    s.conn = { running: true }; renderSheet();
+    const results = await connResults();
+    s.conn = { results }; if (state.sheet === s) renderSheet();
+  }
+  function adminPickScan() {
+    let inp = $("#adminScanIn");
+    if (!inp) {
+      inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.id = "adminScanIn"; inp.hidden = true;
+      document.body.appendChild(inp);
+      inp.addEventListener("change", () => { const f = inp.files && inp.files[0]; inp.value = ""; if (f) adminTestScan(f); });
+    }
+    inp.click();
+  }
+  async function adminTestScan(file) {
+    const s = state.sheet; if (!s || s.type !== "admin") return;
+    const step = t => { s.scan = { running: true, stage: t }; if (state.sheet === s) renderSheet(); };
+    let raw = null;
+    try {
+      step("Foto wird vorbereitet …");
+      const im = await loadImage(file); let v; try { v = await makeVersions(im.img, im.w, im.h); } finally { im.done(); }
+      step("KI erkennt die Karte …");
+      const r = await identify(v.ai, { raw: x => { raw = x; } });
+      const card = normalizeCard(r || {});
+      step("Preis wird gesucht …");
+      const market = await lookupMarket(card, { fresh: true });
+      s.scan = { done: true, ms: raw ? raw.ms : 0, model: raw && raw.model, usage: (raw && raw.usage) || {}, text: raw ? raw.text : "", card, market };
+    } catch (e) { logErr("Test-Scan", e); s.scan = { error: e && e.code ? aiMsg(e) : "Der Test-Scan ist fehlgeschlagen.", text: raw ? raw.text : "" }; }
+    if (state.sheet === s) renderSheet();
+  }
+  async function adminPriceTest(f) {
+    const s = state.sheet; if (!s) return;
+    const q = { q: String(f.get("q") || "").trim(), n: String(f.get("n") || "").trim(), lang: String(f.get("lang") || "DE"), running: true };
+    s.price = q; renderSheet();
+    const lines = [];
+    try {
+      const res = await lookupMarket({ name: q.q, nameEn: q.lang === "EN" ? q.q : null, number: q.n || null, language: q.lang, variant: "Normal" }, { fresh: true });
+      if (res.market) {
+        const m = res.market;
+        lines.push(`Treffer: ${m.matchName} · ${m.matchSet} · Nr. ${m.matchLocal}${m.matchOfficial ? "/" + m.matchOfficial : ""}${m.ambiguous ? " (mehrdeutig)" : ""}`,
+          `Preis: ${money(res.priceEur)} (Trend ${money(m.trend)}, ab ${money(m.low)}, Ø 30 Tage ${money(m.avg30)})`, `TCGdex-ID: ${m.tcgdexId} (${m.lang})`);
+      } else lines.push("Kein Preis: " + (res.error || "keine Antwort"));
+      lines.push("", "Rohdaten:", JSON.stringify(res, null, 1).slice(0, 3000));
+    } catch (e) { lines.push("Fehler: " + ((e && (e.message || e.code)) || e)); }
+    q.running = false; q.res = lines.join("\n"); if (state.sheet === s) renderSheet();
+  }
+  async function adminDiag() {
+    const s = state.sheet; if (!s || s.type !== "admin" || s.diagBusy) return;
+    s.diagBusy = true;
+    let store = "–";
+    try { if (navigator.storage && navigator.storage.estimate) { const e = await navigator.storage.estimate(); store = `${(e.usage / 1048576).toFixed(1)} MB belegt`; } } catch (_) {}
+    const ua = navigator.userAgent, ios = ua.match(/OS (\d+)_(\d+)/);
+    const dev = /iPhone|iPad/.test(ua) ? (ios ? `iOS ${ios[1]}.${ios[2]}` : "iOS") : /Android/.test(ua) ? "Android" : "Computer";
+    const standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone;
+    s.diag = [
+      ["App", NATIVE ? `iOS-App, Build ${app.build || "–"}` : standalone ? "Web-App vom Home-Bildschirm" : "Web-App im Browser"],
+      ["Gerät", dev], ["Online", navigator.onLine ? "ja" : "nein"], ["Speicher", store], ["Darstellung", isDark() ? "dunkel" : "hell"],
+      ["Kamera", navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? "verfügbar" : "nicht verfügbar"],
+      ["Schlüssel", settings.apiKey ? "eingerichtet" : "fehlt"], ["Einträge im Fehlerprotokoll", String(readErrLog().length)],
+    ];
+    s.diagBusy = false; if (state.sheet === s) renderSheet();
+  }
+  async function adminClearCache() {
+    const s = state.sheet; if (!s) return;
+    s.clearing = true; renderSheet();
+    try {
+      await Cache.clear(uidNow());
+      tcgCache.clear(); state.setInfo.clear(); state.setPrices.clear();
+      try { Object.keys(localStorage).filter(k => k.startsWith("ks-set2-")).forEach(k => localStorage.removeItem(k)); } catch (_) {}
+      await loadAll(); render(); toast("Zwischenspeicher geleert, alles neu geladen.");
+    } catch (e) { logErr("Wartung", e); toast("Neu laden hat nicht geklappt."); }
+    s.clearing = false; if (state.sheet === s) renderSheet();
   }
 
   // ---------- sheets ----------
@@ -1652,22 +1962,26 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   function marketBox(c, s) {
     const m = c.market;
-    const head = c.priceSource === "hand" ? "Dein Preis pro Karte" : c.priceSource === "markt" ? `Cardmarket-Trendpreis${m && m.foil ? " (Reverse Holo)" : ""}` : "Wert pro Karte";
+    const head = c.priceSource === "hand" ? "Dein Preis pro Karte" : c.priceSource === "markt" ? `Marktpreis${m && m.foil ? " (Reverse Holo)" : ""}` : "Geschätzter Wert";
     let inner = `<div class="eyebrow">${head} ${priceChip(c)}</div><div class="big">${money(c.priceEur)}</div>`;
-    if (m) {
+    if (m && !tech()) {
+      const cell = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
+      inner += `<div class="mgrid">${cell("Günstigstes Angebot", money(m.low))}${cell("Ø 30 Tage", money(m.avg30))}</div>
+        <div class="fine">Stand ${esc(dOnly(m.updated || m.fetchedAt))}${m.ambiguous ? ' · <span class="bad-txt">bitte prüfen, ob die Karte stimmt</span>' : ""}</div>`;
+    } else if (m) {
       const cell = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
       inner += `<div class="mgrid">${cell("Trend", money(m.trend))}${cell("Ab", money(m.low))}${cell("Ø 1 Tag", money(m.avg1))}${cell("Ø 7 Tage", money(m.avg7))}${cell("Ø 30 Tage", money(m.avg30))}${m.usd != null ? cell("TCGplayer", usd(m.usd)) : ""}</div>
         <div class="fine">Stand ${esc(dOnly(m.updated || m.fetchedAt))} · Quelle: Cardmarket über TCGdex</div>
         <div class="fine">Zugeordnet: ${esc(m.matchName || "?")} · ${esc(m.matchSet || "?")} · Nr. <span class="mono">${esc(m.matchLocal || "?")}${m.matchOfficial ? "/" + esc(m.matchOfficial) : ""}</span>${m.ambiguous ? ' <span class="bad-txt">– mehrere Treffer, bitte prüfen</span>' : ""}</div>`;
     } else {
-      inner += `<div class="fine">${c.priceSource === "hand" ? "Von dir eingetragen." : num(c.priceEur) !== null ? "Grobe KI-Schätzung, kein Marktpreis." : "Noch kein Preis."}${c.marketError ? " " + esc(c.marketError) : ""}</div>`;
+      inner += `<div class="fine">${c.priceSource === "hand" ? "Von dir eingetragen." : num(c.priceEur) !== null ? "Grob geschätzt, kein aktueller Marktpreis." : "Noch kein Preis."}${c.marketError ? " " + esc(c.marketError) : ""}</div>`;
     }
     const hist = cardHistory(c.id);
     if (hist.length >= 2) {
       const dv = hist[hist.length - 1].y - hist[0].y;
       inner += `<div class="spark"><div><div class="k">Preisverlauf seit ${esc(dOnly(hist[0].x))}</div><div class="v ${deltaCls(dv)}">${signed(dv)}${pct(dv, hist[0].y)}</div></div>${lineChart(hist, { w: 140, h: 40, compact: true, label: "Preisverlauf" })}</div>`;
     }
-    return `<div class="pricebox">${inner}<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" type="button" data-act="refresh-card" data-id="${esc(c.id)}" ${s.refreshing ? "disabled" : ""}>${s.refreshing ? "Rufe Preis ab …" : "Marktpreis aktualisieren"}</button><button class="btn small" type="button" data-act="search-card" data-id="${esc(c.id)}">Andere Karte zuordnen</button></div></div>`;
+    return `<div class="pricebox">${inner}<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" type="button" data-act="refresh-card" data-id="${esc(c.id)}" ${s.refreshing ? "disabled" : ""}>${s.refreshing ? "Rufe Preis ab …" : "Preis aktualisieren"}</button><button class="btn small" type="button" data-act="search-card" data-id="${esc(c.id)}">Andere Karte wählen</button></div></div>`;
   }
 
   // Session total counts up, then lands with a little bounce, the cash sound and a burst of coins.
@@ -1707,9 +2021,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       title = "Session abschließen";
       body = `<div class="stack">
         <div class="endbetrag"><div class="eyebrow">Endbetrag dieser Session</div><div class="big">${money(total)}</div><div>${count} Karte${count === 1 ? "" : "n"}</div></div>
-        ${(dv = sessionDupes(), "")}<ul class="compact">${ok.map(i => swipeWrap(i.id, `<div class="cline swipe-fg"><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ""} <span class="muted">${esc(i.card.number || "")} · ${esc(srcLabel(i.card))}</span>${(dv.get(i.id) || {}).ses ? ' <span class="chip warn">doppelt</span>' : ""}</span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span><button class="icon-del" type="button" data-act="del-item" data-id="${esc(i.id)}" aria-label="${esc(i.card.name)} entfernen">${I.trash}</button></div>`)).join("")}</ul>
+        ${(dv = sessionDupes(), "")}<ul class="compact">${ok.map(i => swipeWrap(i.id, `<div class="cline swipe-fg"><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ""} <span class="muted">${esc([i.card.number, srcLabel(i.card)].filter(Boolean).join(" · "))}</span>${(dv.get(i.id) || {}).ses ? ' <span class="chip warn">doppelt</span>' : ""}</span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span><button class="icon-del" type="button" data-act="del-item" data-id="${esc(i.id)}" aria-label="${esc(i.card.name)} entfernen">${I.trash}</button></div>`)).join("")}</ul>
         <p class="fine" style="margin:0">Doppelt gescannt? Nach rechts wischen oder auf den Mülleimer tippen.</p>
-        <p class="fine">Grundlage ist der Cardmarket-Trendpreis (Near Mint) aus TCGdex.${ki ? ` ${ki} Karte${ki === 1 ? "" : "n"} ohne Marktpreis ${ki === 1 ? "ist" : "sind"} mit der KI-Schätzung oder ohne Wert eingerechnet.` : ""} Der Zustand deiner Karte kann den erzielbaren Preis senken.</p>
+        <p class="fine">Die Preise gelten für Karten in sehr gutem Zustand.${ki ? ` ${ki} Karte${ki === 1 ? " ist" : "n sind"} geschätzt.` : ""}${tech() ? " Grundlage: Cardmarket-Trend (Near Mint) über TCGdex." : ""}</p>
         <button class="btn primary block" type="button" data-act="commit" ${state.busy ? "disabled" : ""}>${state.busy ? "Wird übernommen …" : "Zum Inventar hinzufügen"}</button>
       </div>`;
     } else if (s.type === "done") {
@@ -1738,9 +2052,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         ["Seltenheit", c.rarity], ["Variante", c.variant], ["Sprache", c.language ? langLabel(c.language) : null],
         ["Zustand", c.condition ? `${c.condition} · ${condLabel(c.condition)}` : null],
         ["Menge", String(c.qty || 1)], ["Wert gesamt", totalVal === null ? null : `<span class="mono">${money(totalVal)}</span>`, true],
-        ["KI-Schätzung", num(c.kiPriceEur) === null ? null : `<span class="mono">${money(c.kiPriceEur)}</span>`, true],
+        ["KI-Schätzung", !tech() || num(c.kiPriceEur) === null ? null : `<span class="mono">${money(c.kiPriceEur)}</span>`, true],
         ["Kartentyp", c.cardType], ["Typ", c.pokemonType], ["KP", c.hp ? String(c.hp) : null],
-        ["Erkennung", num(c.confidence) === null || c.confidence === 1 ? null : `${Math.round(c.confidence * 100)} % sicher`],
+        ["Erkennung", !tech() || num(c.confidence) === null || c.confidence === 1 ? null : `${Math.round(c.confidence * 100)} % sicher`],
         ["Hinzugefügt", dt(c.addedAt)],
       ].filter(f => f[1]);
       const cmQuery = [(c.market && c.market.matchName) || c.nameEn || c.name, c.number ? String(c.number).split("/")[0] : ""].filter(Boolean).join(" ");
@@ -1771,13 +2085,13 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       const opt = (list, cur) => list.map(([v, l]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${v} · ${l}</option>`).join("");
       body = `<form class="edit" id="editForm">
         <div class="full" style="display:flex;gap:12px;align-items:center"><div class="mini" style="width:64px">${imgTag(thumbOf(src.thumb, c), "Karte")}</div>
-          <div class="stack" style="gap:6px;min-width:0"><div class="fine">Falsche Karte erkannt? Such die richtige in der Datenbank, das übernimmt Name, Set, Nummer und Preis.</div>
-          <button class="btn small" type="button" data-act="${isItem ? "search-item" : "search-card"}" data-id="${esc(src.id)}">${I.find}<span>In Datenbank suchen</span></button></div></div>
+          <div class="stack" style="gap:6px;min-width:0"><div class="fine">Falsche Karte erkannt? Such die richtige, dann wird alles automatisch übernommen.</div>
+          <button class="btn small" type="button" data-act="${isItem ? "search-item" : "search-card"}" data-id="${esc(src.id)}">${I.find}<span>Richtige Karte suchen</span></button></div></div>
         <label class="full">Name<input class="field" id="f-name" name="name" value="${esc(c.name || "")}" required></label>
-        <label class="full">Englischer Name (für die Preissuche)<input class="field" id="f-nameEn" name="nameEn" value="${esc(c.nameEn || "")}" placeholder="z. B. Charizard ex"></label>
-        <label class="full">Set / Erweiterung<input class="field" id="f-set" name="set" value="${esc(c.set || "")}"></label>
-        <label>Set-Kürzel<input class="field" id="f-setCode" name="setCode" value="${esc(c.setCode || "")}"></label>
-        <label>Nummer<input class="field" id="f-number" name="number" value="${esc(c.number || "")}" placeholder="025/165"></label>
+        ${tech() ? `<label class="full">Englischer Name (für die Preissuche)<input class="field" id="f-nameEn" name="nameEn" value="${esc(c.nameEn || "")}" placeholder="z. B. Charizard ex"></label>` : `<input type="hidden" name="nameEn" value="${esc(c.nameEn || "")}">`}
+        <label class="full">Set<input class="field" id="f-set" name="set" value="${esc(c.set || "")}"></label>
+        ${tech() ? `<label>Set-Kürzel<input class="field" id="f-setCode" name="setCode" value="${esc(c.setCode || "")}"></label>` : `<input type="hidden" name="setCode" value="${esc(c.setCode || "")}">`}
+        <label${tech() ? "" : ' class="full"'}>Nummer<input class="field" id="f-number" name="number" value="${esc(c.number || "")}" placeholder="025/165"></label>
         <label>Seltenheit<input class="field" id="f-rarity" name="rarity" value="${esc(c.rarity || "")}"></label>
         <label>Variante<input class="field" id="f-variant" name="variant" value="${esc(c.variant || "")}" list="variants"></label>
         <label>Sprache<select class="field" id="f-language" name="language"><option value="">–</option>${opt(LANGS, c.language)}</select></label>
@@ -1785,7 +2099,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <label>Eigener Preis (€)<input class="field mono" id="f-price" name="priceEur" inputmode="decimal" value="${esc(priceInput(c.priceEur))}" placeholder="0,00"></label>
         <label>Menge<input class="field mono" id="f-qty" name="qty" type="number" min="1" max="999" value="${src.qty || 1}"></label>
         <datalist id="variants"><option value="Normal"><option value="Holo"><option value="Reverse Holo"><option value="1st Edition"><option value="Shadowless"><option value="Promo"></datalist>
-        <p class="fine full" style="margin:0">Änderst du den Preis, gilt er als dein eigener Preis und wird bei Aktualisierungen nicht überschrieben. Leer lassen setzt ihn zurück. Änderst du Name, Set, Nummer oder Variante, wird der Marktpreis neu gesucht.</p>
+        <p class="fine full" style="margin:0">Ein eigener Preis bleibt bei Aktualisierungen erhalten. Leer lassen, um wieder den Marktpreis zu nutzen.</p>
         <button class="btn primary full" type="submit">Speichern</button>
         ${isItem ? `<button class="btn danger full" type="button" data-act="del-item" data-id="${esc(src.id)}">${I.trash}<span>Aus Session entfernen</span></button>` : ""}
       </form>`;
@@ -1801,7 +2115,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         const off = d.set && d.set.cardCount && d.set.cardCount.official;
         return `<li><button class="result" type="button" data-act="pick" data-idx="${i}"><div class="mini">${typeof d.image === "string" ? `<img src="${esc(d.image)}/low.webp" alt="" loading="lazy">` : ""}</div>
           <div style="min-width:0"><div class="nm">${esc(d.name)}</div><div class="sub">${esc((d.set && d.set.name) || d.id)} · <span class="mono">${esc(d.localId)}${off ? "/" + esc(off) : ""}</span></div>${d.rarity ? `<div class="chips"><span class="chip">${esc(d.rarity)}</span></div>` : ""}</div>
-          <div class="px">${b.market ? money(b.market.trend ?? b.priceEur) : "–"}<small>${b.market ? "Trend" : "kein Preis"}</small></div></button></li>`;
+          <div class="px">${b.market ? money(b.market.trend ?? b.priceEur) : "–"}${b.market ? "" : "<small>kein Preis</small>"}</div></button></li>`;
       }).join("")}</ul>${s.more > 0 ? `<p class="fine">${s.more} weitere Treffer. Gib die Nummer an, um einzugrenzen.</p>` : ""}`;
       body = `<div class="stack"><form class="edit" id="searchForm">
         <label class="full">Kartenname<input class="field" id="s-q" name="q" value="${esc(s.q || "")}" placeholder="z. B. Glurak oder Charizard" autocomplete="off" required></label>
@@ -1857,7 +2171,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           </div>
           <div class="pricebox">
             <div class="eyebrow">Fehlende Karten: ${missing.length}</div>
-            ${known.length ? `<div class="fine">Geschätzt zum Vervollständigen: <strong>${money(missSum)}</strong> (Cardmarket-Trend, ${known.length} von ${missing.length} Preisen geladen)</div>` : `<div class="fine">Lade die Preise, um zu sehen, was das Vervollständigen kosten würde.</div>`}
+            ${known.length ? `<div class="fine">Kosten zum Vervollständigen: etwa <strong>${money(missSum)}</strong>${known.length < missing.length ? ` (${known.length} von ${missing.length} Preisen geladen)` : ""}</div>` : `<div class="fine">Lade die Preise, um zu sehen, was die fehlenden Karten kosten.</div>`}
             ${known.length < missing.length ? `<div><button class="btn small" type="button" data-act="set-prices" data-id="${esc(s.id)}" ${state.setPricesBusy ? "disabled" : ""}>${busy ? `Lade Preise ${busy.done}/${busy.total} …` : `Preise der fehlenden Karten laden (${missing.length - known.length})`}</button></div>` : ""}
           </div>
           <div class="seg" role="group" aria-label="Anzeigen">
@@ -1871,7 +2185,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           </div>
           <div class="fine">${list.length} Karte${list.length === 1 ? "" : "n"}${listPriced ? ` · zusammen ${money(listSum)}${listPriced < list.length ? ` (${listPriced} mit Preis)` : ""}` : ""}${busy ? " · Preise werden geladen …" : ""}</div>
           ${list.length ? `<div class="sgrid">${list.map(tile).join("")}</div>` : `<div class="empty">${lo !== null || hi !== null ? (busy ? "Preise werden geladen …" : "Keine Karte in dieser Preisspanne.") : f === "missing" ? "Du hast alle Karten dieses Sets. Glückwunsch!" : "Keine Karten."}</div>`}
-          <p class="fine" style="margin:0">Preise: Cardmarket-Trend (Normalversion). Fehlende Karten öffnen die Cardmarket-Suche. Gezählt werden Karten mit Marktpreis-Zuordnung, unabhängig von Sprache und Variante.</p>
+          <p class="fine" style="margin:0">Tippe auf eine fehlende Karte, um sie auf Cardmarket zu suchen.${tech() ? " Preise: Cardmarket-Trend (Normalversion). Gezählt werden Karten mit Marktpreis-Zuordnung, unabhängig von Sprache und Variante." : ""}</p>
         </div>`;
       }
     } else if (s.type === "login-email") {
@@ -1902,42 +2216,83 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       const key = settings.apiKey, u = state.user;
       const sw = (act, on, label) => `<button class="cell" type="button" role="switch" aria-checked="${on}" data-act="${act}"><span>${label}</span><span class="switch" aria-hidden="true"></span></button>`;
       const link = (act, label, val) => `<button class="cell link" type="button" data-act="${act}"><span>${label}</span><span class="tail">${val ? `<span class="val">${esc(val)}</span>` : ""}<span class="chev"></span></span></button>`;
-      const loginNote = u && isEmailId(u.email) ? "Anmeldung per E-Mail. In der Datenbank stehen E-Mail-Adresse und Passwort nur als Hash."
-        : u && isPseudo(u.email) ? "Du meldest dich noch mit Benutzernamen an. Stell auf E-Mail um; sie wird nur als Hash gespeichert."
-        : `<span class="bad-txt">In der Datenbank steht noch deine echte E-Mail-Adresse. Stell die Anmeldung um, dann wird sie durch einen Hash ersetzt.</span>`;
-      const idleNote = settings.idle ? ` Ohne weitere Aktivität: Abmeldung um ${esc(new Date(Date.now() + settings.idle * 60e3).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))} Uhr.` : "";
+      const legacyLogin = u && !isEmailId(u.email);
       body = `<div class="stack settings">
         <section><h3 class="gh">Darstellung</h3>
-          <div class="group pad"><div class="seg" role="group" aria-label="Darstellung">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button type="button" data-act="theme-set" data-theme="${k}" aria-pressed="${settings.theme === k}">${l}</button>`).join("")}</div></div>
-          <p class="gf">„Automatisch“ folgt der Einstellung deines iPhones.</p></section>
+          <div class="group pad"><div class="seg" role="group" aria-label="Darstellung">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button type="button" data-act="theme-set" data-theme="${k}" aria-pressed="${settings.theme === k}">${l}</button>`).join("")}</div></div></section>
         <section><h3 class="gh">Kamera</h3>
           <div class="group">${sw("set-auto", settings.auto, "Automatisch auslösen")}${sw("set-sound", settings.sound, "Kassen-Sound")}</div>
-          <p class="gf">Die Kamera löst aus, sobald eine Karte ruhig im Rahmen liegt. Bei stummgeschaltetem iPhone gibt es keinen Ton.</p></section>
-        <section><h3 class="gh">Erkennung per KI</h3>
-          <form class="group" id="settingsForm">
-            <label class="cell"><span>API-Schlüssel</span><input class="cell-input mono" id="set-key" name="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${key ? "gespeichert" : "sk-ant-…"}"></label>
-            <label class="cell"><span>Modell</span><select class="cell-select" id="set-model" name="model">${MODELS.map(([v, l]) => `<option value="${v}" ${v === settings.model ? "selected" : ""}>${l.replace(/ \(.*\)$/, "")}</option>`).join("")}</select></label>
-            <button class="cell action" type="submit">Schlüssel speichern</button>
-            ${key ? `<button class="cell action danger" type="button" data-act="key-del">Schlüssel entfernen</button>` : ""}
-          </form>
-          <p class="gf">Der Schlüssel bleibt nur auf diesem Gerät und geht direkt an api.anthropic.com. Jeder Scan kostet etwas API-Guthaben; Sonnet ist genauer, Haiku günstiger. Schlüssel gibt es in der <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a>, dort am besten ein Ausgabelimit setzen.</p></section>
+          <p class="gf">Die Kamera löst aus, sobald eine Karte ruhig im Rahmen liegt.</p></section>
+        <section><h3 class="gh">Erkennung</h3>
+          <div class="group">
+            ${link("key-setup", "Schlüssel", key ? "Eingerichtet" : "Fehlt")}
+            <label class="cell"><span>Modus</span><select class="cell-select" id="set-model">${MODELS.map(([v, l]) => `<option value="${v}" ${v === settings.model ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          </div>
+          ${key ? "" : `<p class="gf">Ohne Schlüssel kannst du Karten über „Suchen“ hinzufügen.</p>`}</section>
         <section><h3 class="gh">Konto</h3>
           <div class="group">
             <div class="cell"><span>Angemeldet als</span><span class="val">${esc(shownUser())}</span></div>
-            ${link("login-email", u && isEmailId(u.email) ? "E-Mail ändern" : "E-Mail-Anmeldung einrichten")}
+            ${link("name", "Name", greetName() || "Nicht festgelegt")}
+            ${legacyLogin || isAdmin() ? link("login-email", legacyLogin ? "Auf E-Mail-Anmeldung umstellen" : "E-Mail ändern") : ""}
             ${link("pw-change", "Passwort ändern")}
             <label class="cell"><span>Automatisch abmelden</span><select class="cell-select" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l}</option>`).join("")}</select></label>
           </div>
-          <p class="gf">${loginNote} Während du scannst oder Preise geladen werden, wirst du nicht abgemeldet; 30 Sekunden vorher kommt eine Warnung.${idleNote}</p></section>
+          <p class="gf">Nach dieser Zeit ohne Aktivität wirst du abgemeldet, aber nie während eines Scans.</p></section>
         <section><h3 class="gh">Sicherung</h3>
           <div class="group">${link("export", "Backup speichern")}${link("import", "Backup laden")}</div>
-          <p class="gf">Inventar und Verlauf als Datei, ohne Fotos. Deine Daten liegen ohnehin dauerhaft in deinem Konto.</p></section>
+          <p class="gf">Deine Sammlung ist in deinem Konto gespeichert. Ein Backup ist eine zusätzliche Kopie als Datei.</p></section>
         ${NATIVE ? `<section><h3 class="gh">App</h3>
           <div class="group"><div class="cell"><span>Version</span><span class="val">${app.build ? `Build ${app.build}` : "–"}</span></div>${app.update ? link("app-update", "Update laden", `Build ${app.update}`) : ""}</div>
-          <p class="gf">${app.update ? "Lade die neue Datei herunter und installiere sie mit Sideloadly über die alte App; deine Daten bleiben erhalten." : "Du hast die aktuelle Version."} Mit einer kostenlosen Apple-ID muss die App alle 7 Tage neu signiert werden.</p></section>` : ""}
+          <p class="gf">${app.update ? "Eine neue Version ist da. Lade sie herunter und spiel sie über die alte App; deine Daten bleiben erhalten." : "Du hast die aktuelle Version."}</p></section>` : ""}
+        ${isAdmin() ? `<section><h3 class="gh">Admin</h3><div class="group">${link("admin", "Admin-Bereich")}</div></section>` : ""}
         <div class="group"><button class="cell action danger center" type="button" data-act="logout">Abmelden</button></div>
-        <p class="fine legal">Preisdaten: <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a> (Cardmarket, täglich aktualisiert). Pokémon und Pokémon-Kartennamen sind Marken von Nintendo, Creatures und GAME FREAK; diese App ist ein privates Fanprojekt.</p>
+        <p class="fine legal">Preise: Cardmarket über <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a>. Pokémon ist eine Marke von Nintendo, Creatures und GAME FREAK. Privates Fanprojekt.</p>
       </div>`;
+    } else if (s.type === "welcome") {
+      title = "Willkommen";
+      body = `<div class="stack">
+        <div class="dtitle"><h2>Willkommen${greetName() ? ", " + esc(greetName()) : ""}!</h2><div class="sub">So funktioniert der Kartenscanner:</div></div>
+        <div class="steps"><div><b>Scannen</b>Halte eine Karte in den Rahmen, die App erkennt sie und zeigt ihren Wert.</div><div><b>Prüfen</b>Tippe eine Karte an, falls etwas nicht stimmt.</div><div><b>Abschließen</b>Du siehst den Gesamtwert und legst alles in dein Inventar.</div></div>
+        ${settings.apiKey ? `<button class="btn primary block" type="button" data-act="close">Los geht's</button>` : `
+        <div class="notice">Für die automatische Erkennung brauchst du einmalig einen eigenen Schlüssel. Das dauert etwa 5 Minuten. Bis dahin kannst du Karten über „Suchen“ hinzufügen.</div>
+        <div class="actions"><button class="btn" type="button" data-act="close">Später</button><button class="btn primary" type="button" data-act="key-setup">Jetzt einrichten</button></div>`}
+      </div>`;
+    } else if (s.type === "key") {
+      title = "Erkennung einrichten";
+      const has = !!settings.apiKey;
+      if (has && !s.edit) {
+        body = `<div class="stack">
+          <div class="notice ok-box">Die Erkennung ist eingerichtet. Du kannst Karten mit der Kamera scannen.</div>
+          <div class="group"><button class="cell action" type="button" data-act="key-edit">Neuen Schlüssel eintragen</button><button class="cell action danger" type="button" data-act="key-del">Schlüssel entfernen</button></div>
+          <p class="gf">Dein Guthaben und ein Ausgabelimit verwaltest du auf <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">console.anthropic.com</a>.</p>
+        </div>`;
+      } else {
+        body = `<div class="stack">
+          <p style="margin:0">Die App erkennt Karten mit der KI <b>Claude</b> von Anthropic. Dafür brauchst du einen eigenen Schlüssel. Jeder Scan kostet dort meist nur wenige Cent von deinem Guthaben.</p>
+          <div class="steps">
+            <div><b>Konto anlegen</b>Öffne <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> und registriere dich.</div>
+            <div><b>Guthaben aufladen</b>Unter „Billing“ ein paar Euro aufladen. Tipp: Dort auch ein monatliches Limit festlegen.</div>
+            <div><b>Schlüssel erstellen</b>Unter „API Keys“ auf „Create Key“ tippen und den Schlüssel kopieren.</div>
+            <div><b>Hier einfügen</b>Schlüssel unten einfügen und speichern.</div>
+          </div>
+          <form class="edit" id="keyForm">
+            <label class="full">Dein Schlüssel<input class="field mono" id="key-in" name="key" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="sk-ant-…" required></label>
+            ${s.err ? `<div class="banner full">${esc(s.err)}</div>` : ""}
+            <button class="btn primary full" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? "Wird geprüft …" : "Prüfen und speichern"}</button>
+          </form>
+          <p class="gf" style="margin:0">Der Schlüssel bleibt nur auf diesem Gerät und gehört zu deinem Konto.</p>
+        </div>`;
+      }
+    } else if (s.type === "name") {
+      title = "Name";
+      body = `<form class="edit" id="nameForm">
+        <label class="full">Wie sollen wir dich nennen?<input class="field" id="name-in" name="name" maxlength="40" autocomplete="nickname" value="${esc(greetName())}" required></label>
+        ${s.err ? `<div class="banner full">${esc(s.err)}</div>` : ""}
+        <button class="btn primary full" type="submit" ${s.busy ? "disabled" : ""}>Speichern</button>
+      </form>`;
+    } else if (s.type === "admin") {
+      title = "Admin-Bereich";
+      body = adminBody(s);
     }
     const prevSheet = root.querySelector(".scrim:not(.leaving) .sheet"), sheetKey = s.type + ":" + (s.id || "");
     const same = !!prevSheet && root.dataset.key === sheetKey;
@@ -1949,21 +2304,19 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (keepScroll) root.querySelector(".sheet").scrollTop = keepScroll;
     if (focused && (focused === "pmin" || focused === "pmax")) { const el = $("#" + focused); if (el) { el.focus(); const n = el.value.length; try { el.setSelectionRange(n, n); } catch (_) {} } }
     if (s.type === "done") playDone(s);
-    const sm = $("#set-model"); if (sm) sm.onchange = () => { settings.model = sm.value; toast("Modell gespeichert."); };
+    const sm = $("#set-model"); if (sm) sm.onchange = () => { settings.model = sm.value; toast(sm.value === MODELS[0][0] ? "Modus: genau." : "Modus: schnell & günstig."); };
     const cs = $("#cardSort"); if (cs) cs.onchange = () => { settings.cardSort = cs.value; renderSheet(); };
     for (const idr of ["pmin", "pmax"]) { const el = $("#" + idr); if (el) el.oninput = () => { clearTimeout(rangeTimer); rangeTimer = setTimeout(() => { if (!state.sheet) return; state.sheet[idr === "pmin" ? "min" : "max"] = parsePrice(el.value); renderSheet(); }, 450); }; }
     const ef = $("#editForm"); if (ef) ef.onsubmit = e => { e.preventDefault(); saveEdit(ef); };
     const sf = $("#searchForm"); if (sf) sf.onsubmit = e => { e.preventDefault(); runSearch(sf); };
     const lf = $("#leForm"); if (lf) lf.onsubmit = e => { e.preventDefault(); setLoginEmail(new FormData(lf)); };
+    const kf = $("#keyForm"); if (kf) kf.onsubmit = e => { e.preventDefault(); saveKey(String(new FormData(kf).get("key") || "")); };
+    const nf = $("#nameForm"); if (nf) nf.onsubmit = e => { e.preventDefault(); saveName(String(new FormData(nf).get("name") || "")); };
+    const apf = $("#adminPwForm"); if (apf) apf.onsubmit = e => { e.preventDefault(); adminSetPassword(String(new FormData(apf).get("pw") || "")); };
+    const aqf = $("#adminPriceForm"); if (aqf) aqf.onsubmit = e => { e.preventDefault(); adminPriceTest(new FormData(aqf)); };
     const pf = $("#pwForm"); if (pf) pf.onsubmit = e => { e.preventDefault(); changePassword(new FormData(pf)); };
     const si = $("#set-idle"); if (si) si.onchange = () => { settings.idle = Number(si.value); markActive(true); toast(settings.idle ? `Automatische Abmeldung nach ${idleLabel()} ohne Aktivität.` : "Automatische Abmeldung ist aus."); };
-    const st = $("#settingsForm"); if (st) st.onsubmit = e => {
-      e.preventDefault();
-      const k = String(new FormData(st).get("key") || "").trim();
-      if (!k) { toast("Gib zuerst einen Schlüssel ein."); $("#set-key").focus(); return; }
-      settings.apiKey = k; settings.model = String(new FormData(st).get("model") || MODELS[0][0]);
-      toast("Schlüssel gespeichert."); closeSheet(); render();
-    };
+    if (s.type === "admin") adminAfterRender(s);
   }
 
   // ---------- toast ----------
@@ -2084,13 +2437,30 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "edit-card": openSheet({ type: "edit", kind: "card", id }); break;
       case "refresh-card": refreshCard(id); break;
       case "refresh-all": refreshAll(); break;
-      case "test": testConnections(); break;
       case "delete": state.sheet.confirmDelete = true; renderSheet(); break;
       case "delete-yes": deleteCard(id); break;
+      case "key-setup": openSheet({ type: "key" }); break;
+      case "key-edit": state.sheet.edit = true; state.sheet.err = null; renderSheet(); setTimeout(() => { const k = $("#key-in"); if (k) k.focus(); }, 50); break;
+      case "name": openSheet({ type: "name" }); break;
+      case "admin": openSheet({ type: "admin", tab: "users" }); adminLoadUsers(); break;
+      case "admin-tab": state.sheet.tab = el.dataset.pane; state.sheet.sel = null; renderSheet(); break;
+      case "admin-reload": adminLoadUsers(true); break;
+      case "admin-user": Object.assign(state.sheet, { sel: id, confirmDel: false, msg: null, err: null }); renderSheet(); break;
+      case "admin-back": Object.assign(state.sheet, { sel: null, msg: null, err: null }); renderSheet(); break;
+      case "admin-block": adminBlock(id, true); break;
+      case "admin-unblock": adminBlock(id, false); break;
+      case "admin-delete": state.sheet.confirmDel = true; renderSheet(); break;
+      case "admin-delete-yes": adminDelete(id); break;
+      case "admin-conn": adminConn(); break;
+      case "admin-scan": adminPickScan(); break;
+      case "admin-clear-cache": adminClearCache(); break;
+      case "admin-log-copy": { const t = readErrLog().map(x => `${new Date(x.t).toLocaleString("de-DE")} [${x.w}] ${x.m}`).join("\n"); (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Protokoll kopiert."), () => toast("Kopieren ging nicht.")); break; }
+      case "admin-log-clear": try { localStorage.removeItem(ERRLOG_KEY); } catch (_) {} renderSheet(); break;
+      case "set-tech": haptic("light"); settings.tech = !settings.tech; el.setAttribute("aria-checked", String(settings.tech)); render(); break;
       case "set-auto": haptic("light"); settings.auto = !settings.auto; el.setAttribute("aria-checked", String(settings.auto)); break;
       case "set-sound": haptic("light"); settings.sound = !settings.sound; el.setAttribute("aria-checked", String(settings.sound)); if (settings.sound) { audioUnlock(); cashSound(false); } break;
       case "app-update": window.open(RELEASE_PAGE, "_blank"); break;
-      case "key-del": settings.apiKey = ""; toast("Schlüssel gelöscht."); renderSheet(); render(); break;
+      case "key-del": settings.apiKey = ""; toast("Schlüssel entfernt."); if (state.sheet) { state.sheet.edit = false; renderSheet(); } render(); break;
       case "export": exportData(); break;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
       case "logout": closeSheet(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
@@ -2204,6 +2574,32 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (stale.length) await saveMany("items", stale).catch(() => {});
     state.loaded = true; state.lastSync = Date.now();
   }
+  // Profile from the server: name, admin, blocked. Works without it if the database is not updated yet.
+  async function loadProfile(name) {
+    try {
+      const { data, error } = await sb.rpc("me", { p_name: name || state.pendingName || null });
+      state.pendingName = null;
+      if (error) throw error;
+      state.me = data || null;
+    } catch (e) { logErr("Profil", e); state.me = state.me || { admin: false, blocked: false, name: null, missing: true }; }
+    if (state.me && state.me.blocked) {
+      state.authErr = "Dein Konto ist gesperrt. Wende dich an den Admin der App.";
+      await sb.auth.signOut().catch(() => {});
+      return false;
+    }
+    return true;
+  }
+  // First visit of a new account: a short welcome with the next step.
+  function maybeWelcome() {
+    const k = "ks-welcomed:" + (state.user && state.user.id);
+    let seen = false; try { seen = !!localStorage.getItem(k); } catch (_) {}
+    if (seen) return;
+    try { localStorage.setItem(k, "1"); } catch (_) {}
+    if (state.cards.length || state.sessions.length || state.sheet) return;
+    openSheet({ type: "welcome" });
+  }
+  const greetName = () => (state.me && state.me.name) || "";
+
   function clearData() {
     state.cards = []; state.sessions = []; state.items = []; state.history = []; state.open = null; state.loaded = false; state.fromCache = false;
     state.imgCache.forEach(u => { try { URL.revokeObjectURL(u); } catch (_) {} }); state.imgCache.clear();
@@ -2212,15 +2608,20 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.authReady = true;
     if (event === "PASSWORD_RECOVERY") { state.recovery = true; state.authErr = null; state.authMsg = null; }
     const user = session ? session.user : null;
-    if (!user) { state.user = null; state.recovery = false; clearData(); render(); return; }
+    if (!user) { state.user = null; state.me = null; window.__ksUid = null; state.recovery = false; clearData(); render(); return; }
     if (state.user && state.user.id === user.id) { state.user = user; render(); return; }
     // App reopened after a long break: the old login is not resumed.
     if (event === "INITIAL_SESSION" && idleExpired()) { idleLogout(); return; }
     markActive(true);
-    state.user = user; clearData(); state.authMsg = null; state.authErr = null; render();
+    window.__ksUid = user.id;
+    // Older versions kept one key per device: it now belongs to the first account that signs in here.
+    try { const old = localStorage.getItem("ks-apikey"); if (old) { if (!settings.apiKey) settings.apiKey = old; localStorage.removeItem("ks-apikey"); } } catch (_) {}
+    state.user = user; state.me = null; clearData(); state.authErr = null; render();
+    if (!(await loadProfile())) return;
     try { await loadAll(); } catch (e) { toast(state.loaded ? "Keine Verbindung. Du siehst den zuletzt geladenen Stand." : "Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); state.loaded = true; }
     render();
     maybeAutoRefresh();
+    maybeWelcome();
     const L = await Legacy.read();
     state.legacy = L && ((L.cards || []).length || (L.sessions || []).length || (L.items || []).length) ? L : null;
     render();

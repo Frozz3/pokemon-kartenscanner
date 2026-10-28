@@ -15,6 +15,8 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Wertentwicklung:** Täglicher Schnappschuss des Sammlungswerts, automatische Preisaktualisierung einmal am Tag, Kurve, Veränderung über 7 und 30 Tage, Gewinner und Verlierer, Preisverlauf je Karte.
 - **Set-Fortschritt:** Pro Set „47/189“ mit Fortschrittsbalken, deutsche Set- und Kartennamen mit deutschen Kartenbildern (englischer Fallback), Sets sortierbar nach Fortschritt, Wert, fehlenden Karten, Name oder Erscheinungsjahr. In der Set-Ansicht Karten nach Preis oder Nummer sortieren und nach Preisspanne filtern, mit Summe der Auswahl und Kosten zum Vervollständigen.
 - **Verlauf** aller abgeschlossenen Sessions.
+- **Für alle nutzbar:** Jeder kann sich selbst registrieren (Name optional), bekommt eine kurze Begrüßung und eine Schritt-für-Schritt-Hilfe für den eigenen Erkennungs-Schlüssel (wird vor dem Speichern geprüft und gilt nur für das eigene Konto). Die Oberfläche zeigt nur, was man zum Sammeln braucht; Technik-Angaben gibt es nur im Admin-Bereich.
+- **Admin-Bereich** (nur für Admins, unter Einstellungen): **Nutzer** (Konten mit Karten, Sammlungswert, Scans und KI-Verbrauch; vorläufiges Passwort setzen, sperren, löschen), **Tests** (Verbindungstest, Test-Scan mit KI-Rohantwort, Preis-Abfrage, Diagnose), **Technik** (Schalter für Technik-Details in der ganzen App, Preis- und Datenstatus), **Wartung** (alle Preise neu laden, Zwischenspeicher leeren, Backup, Fehlerprotokoll).
 - **Konto mit Login:** E-Mail und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. **E-Mail und Passwort werden auf dem Gerät gehasht** (PBKDF2-SHA-256); in der Datenbank steht nur `e-<hash>@kartenscanner.invalid`, und Supabase speichert den Passwort-Hash zusätzlich mit bcrypt. Das echte Passwort verlässt nie das Gerät. Ältere Logins (Benutzername, unverhashtes Passwort) funktionieren weiter und werden beim Anmelden automatisch umgestellt. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
 - **Automatische Abmeldung** nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.
 - **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
@@ -74,10 +76,11 @@ Einrichtung:
 2. **SQL Editor** → Inhalt von [`supabase/schema.sql`](supabase/schema.sql) einfügen → **Run**.
 3. **Authentication → URL Configuration:** Site URL `https://frozz3.github.io/pokemon-kartenscanner/`, dieselbe Adresse auch unter Redirect URLs eintragen.
 4. **Project Settings → API:** Project URL und den `anon`/`publishable` Key in [`config.js`](config.js) eintragen. Den `service_role`/`secret` Key niemals verwenden.
-5. **Authentication → Sign In / Providers → „Confirm email“ ausschalten** (Supabase kennt nur den Hash, eine Bestätigungs-Mail käme nie an). Dann in der App mit E-Mail und Passwort registrieren.
-6. Danach **Authentication → Sign In / Providers → „Allow new users to sign up“ ausschalten**, damit sich niemand Fremdes registriert.
+5. **Authentication → Sign In / Providers → „Confirm email“ ausschalten** (Supabase kennt nur den Hash, eine Bestätigungs-Mail käme nie an).
+6. **„Allow new users to sign up“ eingeschaltet lassen**, damit sich andere selbst registrieren können. (Soll die App privat bleiben: ausschalten.)
+7. In der App registrieren. **Das älteste Konto wird automatisch Admin** (beim Ausführen von `schema.sql`, solange es noch keinen Admin gibt). Prüfen mit `select * from public.admins;`, weitere Admins mit `insert into public.admins (user_id) values ('<Konto-ID aus Authentication → Users>');`.
 
-**Schon eingerichtet?** Für den schnellen Abgleich den Inhalt von `schema.sql` einfach noch einmal im SQL Editor ausführen. Das ist gefahrlos und ergänzt nur den Zeitstempel-Trigger, der jede Änderung mit der Serverzeit versieht. Ohne ihn funktioniert die App auch, sie verlässt sich dann auf die Uhr des Handys (mit 10 Minuten Puffer).
+**Schon eingerichtet?** Nach Updates den Inhalt von `schema.sql` einfach noch einmal im SQL Editor ausführen. Das ist gefahrlos, vorhandene Daten bleiben erhalten; es ergänzt Profile, Sperren, Verbrauchszähler, Admin-Funktionen und den Zeitstempel-Trigger für den schnellen Abgleich.
 
 Hinweis: Supabase pausiert kostenlose Projekte nach etwa einer Woche ohne Nutzung. Ein Klick auf „Restore“ im Dashboard holt das Projekt mit allen Daten zurück.
 
@@ -87,7 +90,9 @@ In der App: Einstellungen → Konto → **E-Mail-Anmeldung einrichten**. Die App
 
 ### Passwort vergessen
 
-Ohne gespeicherte E-Mail-Adresse gibt es keinen Reset-Link. Im SQL Editor ein vorläufiges Passwort setzen; die App akzeptiert es beim nächsten Login und stellt es sofort auf den Hash um:
+Ohne gespeicherte E-Mail-Adresse gibt es keinen Reset-Link. Für andere Nutzer: Admin-Bereich → Nutzer → Konto → **Vorläufiges Passwort setzen** und der Person sagen; sie ändert es danach unter Einstellungen → Passwort ändern.
+
+Für dein eigenes Admin-Konto im SQL Editor ein vorläufiges Passwort setzen; die App akzeptiert es beim nächsten Login und stellt es sofort auf den Hash um:
 
 ```sql
 update auth.users
@@ -99,10 +104,11 @@ Danach in der App unter Einstellungen → **Passwort ändern** ein neues Passwor
 
 ## Sicherheit
 
-- Im Repository stehen keine Geheimnisse, nur der öffentliche Supabase-Schlüssel. Deine Daten schützt die Row Level Security; der Anthropic-Schlüssel bleibt auf dem Gerät.
+- Im Repository stehen keine Geheimnisse, nur der öffentliche Supabase-Schlüssel. Deine Daten schützt die Row Level Security; der Anthropic-Schlüssel bleibt auf dem Gerät und gilt nur für das Konto, mit dem er eingetragen wurde.
 - **Content Security Policy** (in `index.html`): Die App lädt nur eigene Dateien und spricht nur mit Supabase, TCGdex, Anthropic und GitHub (Update-Prüfung). Eingeschleuster Code und Anfragen an fremde Server werden blockiert. Wer das kleine Inline-Skript im `<head>` ändert, muss den Hash in der Policy anpassen.
 - Der App-Build nutzt nur GitHubs eigene Actions, fest auf geprüfte Versionen (Commit) gepinnt.
-- In Supabase **„Allow new users to sign up“ ausschalten**, damit sich niemand Fremdes registriert.
+- Jedes Konto sieht nur seine eigenen Daten (Row Level Security). Gesperrte Konten kommen an nichts mehr heran. Admins sehen von anderen nur Zahlen (Kartenanzahl, Wert, Scans), keine Karten oder Fotos; alle Admin-Funktionen prüfen die Rechte auf dem Server.
+- Offene Registrierung: Supabase begrenzt Anmeldeversuche pro IP. Wer einen Spam-Schutz will, kann unter Authentication → Attack Protection ein CAPTCHA aktivieren (braucht dann eine kleine Anpassung in der App).
 - Für Sideloadly/SideStore am besten eine zweite Apple-ID nehmen, nicht die Haupt-ID.
 
 ## Technik
