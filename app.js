@@ -90,6 +90,7 @@
       // The API key belongs to the signed-in account on this device (others on the same phone don't use it).
       get apiKey() { const u = window.__ksUid; return u ? read("apikey:" + u, "") : ""; },
       set apiKey(v) { const u = window.__ksUid; if (u) write("apikey:" + u, v); },
+      get closeLogout() { return read("closelogout", "1") === "1"; }, set closeLogout(v) { write("closelogout", v ? "1" : "0"); },
       get tech() { return read("tech", "0") === "1"; }, set tech(v) { write("tech", v ? "1" : "0"); },
       get model() { return read("model", MODELS[0][0]); }, set model(v) { write("model", v); },
       get sort() { return read("sort", "value"); }, set sort(v) { write("sort", v); },
@@ -2275,9 +2276,10 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
             ${link("name", "Name", greetName() || "Nicht festgelegt")}
             ${legacyLogin || isAdmin() ? link("login-email", legacyLogin ? "Auf E-Mail-Anmeldung umstellen" : "E-Mail ändern") : ""}
             ${link("pw-change", "Passwort ändern")}
+            ${sw("set-closelogout", settings.closeLogout, "Beim Schließen abmelden")}
             <label class="cell"><span>Automatisch abmelden</span><select class="cell-select" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l}</option>`).join("")}</select></label>
           </div>
-          <p class="gf">Nach dieser Zeit ohne Aktivität wirst du abgemeldet, aber nie während eines Scans.</p></section>
+          <p class="gf">${settings.closeLogout ? "Nach dem Schließen der App musst du dich neu anmelden. " : ""}Ohne Aktivität wirst du nach der eingestellten Zeit abgemeldet, aber nie während eines Scans.</p></section>
         <section><h3 class="gh">Sicherung</h3>
           <div class="group">${link("export", "Backup speichern")}${link("import", "Backup laden")}</div>
           <p class="gf">Deine Sammlung ist in deinem Konto gespeichert. Ein Backup ist eine zusätzliche Kopie als Datei.</p></section>
@@ -2497,6 +2499,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "admin-restore": adminRestore(id); break;
       case "admin-log-copy": { const t = readErrLog().map(x => `${new Date(x.t).toLocaleString("de-DE")} [${x.w}] ${x.m}`).join("\n"); (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Protokoll kopiert."), () => toast("Kopieren ging nicht.")); break; }
       case "admin-log-clear": try { localStorage.removeItem(ERRLOG_KEY); } catch (_) {} renderSheet(); break;
+      case "set-closelogout": haptic("light"); settings.closeLogout = !settings.closeLogout; el.setAttribute("aria-checked", String(settings.closeLogout)); break;
       case "set-tech": haptic("light"); settings.tech = !settings.tech; el.setAttribute("aria-checked", String(settings.tech)); render(); break;
       case "set-auto": haptic("light"); settings.auto = !settings.auto; el.setAttribute("aria-checked", String(settings.auto)); break;
       case "set-sound": haptic("light"); settings.sound = !settings.sound; el.setAttribute("aria-checked", String(settings.sound)); if (settings.sound) { audioUnlock(); cashSound(false); } break;
@@ -2656,10 +2659,15 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.authReady = true;
     if (event === "PASSWORD_RECOVERY") { state.recovery = true; state.authErr = null; state.authMsg = null; }
     const user = session ? session.user : null;
+    // Start of the app with a stored login: decide once whether it may be resumed. This must not depend on
+    // the event name: Supabase reports a restored login as SIGNED_IN or TOKEN_REFRESHED before INITIAL_SESSION.
+    const firstEvent = !startupChecked; startupChecked = true;
+    if (user && firstEvent && !state.authBusy) {
+      if (settings.closeLogout && freshStart) { idleLogout("close"); return; }
+      if (idleExpired()) { idleLogout(); return; }
+    }
     if (!user) { state.user = null; state.me = null; window.__ksUid = null; state.recovery = false; clearData(); render(); return; }
     if (state.user && state.user.id === user.id) { state.user = user; render(); return; }
-    // App reopened after a long break: the old login is not resumed.
-    if (event === "INITIAL_SESSION" && idleExpired()) { idleLogout(); return; }
     markActive(true);
     window.__ksUid = user.id;
     // Older versions kept one key per device: it now belongs to the first account that signs in here.
@@ -2690,7 +2698,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   const camLive = () => camOpen() && !document.hidden && stream.getTracks().some(t => t.readyState === "live");
   const appBusy = () => camLive() || state.running.size > 0 || !!state.refreshing || !!state.migrating || state.busy || !!state.setPricesBusy || state.authBusy;
   const idleExpired = () => { if (!settings.idle) return false; let t = lastActive; try { t = Math.max(t, Number(localStorage.getItem("ks-active")) || 0); } catch (_) {} return Date.now() - t >= settings.idle * 60e3; };
-  async function idleLogout() {
+  // "Closed" = this page was started fresh (sessionStorage is empty after the app was closed or removed from
+  // memory; it survives reloads and switching apps).
+  let startupChecked = false, freshStart = true;
+  try { freshStart = !sessionStorage.getItem("ks-open"); sessionStorage.setItem("ks-open", "1"); } catch (_) {}
+  async function idleLogout(reason) {
     if (camOpen()) closeCamera();
     closeSheet();
     idleWarned = false;
@@ -2699,7 +2711,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.authMode = "login"; state.authErr = null;
     try { await sb.auth.signOut({ scope: "local" }); } catch (_) {}
     state.user = null; clearData();
-    state.authMsg = `Du wurdest nach ${label} ohne Aktivität abgemeldet.`;
+    state.authMsg = reason === "close" ? "Du wurdest abgemeldet, weil die App geschlossen wurde." : `Du wurdest nach ${label} ohne Aktivität abgemeldet.`;
     render();
   }
   function idleCheck() {
