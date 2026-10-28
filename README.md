@@ -97,6 +97,14 @@ update auth.users
 
 Danach in der App unter Einstellungen → **Passwort ändern** ein neues Passwort festlegen.
 
+## Sicherheit
+
+- Im Repository stehen keine Geheimnisse, nur der öffentliche Supabase-Schlüssel. Deine Daten schützt die Row Level Security; der Anthropic-Schlüssel bleibt auf dem Gerät.
+- **Content Security Policy** (in `index.html`): Die App lädt nur eigene Dateien und spricht nur mit Supabase, TCGdex, Anthropic und GitHub (Update-Prüfung). Eingeschleuster Code und Anfragen an fremde Server werden blockiert. Wer das kleine Inline-Skript im `<head>` ändert, muss den Hash in der Policy anpassen.
+- Der App-Build nutzt nur GitHubs eigene Actions, fest auf geprüfte Versionen (Commit) gepinnt.
+- In Supabase **„Allow new users to sign up“ ausschalten**, damit sich niemand Fremdes registriert.
+- Für Sideloadly/SideStore am besten eine zweite Apple-ID nehmen, nicht die Haupt-ID.
+
 ## Technik
 
 Reines HTML, CSS und JavaScript ohne Build-Schritt:
