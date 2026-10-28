@@ -19,6 +19,7 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Automatische Abmeldung** nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.
 - **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
 - **Design im iOS-Stil** mit Systemschrift, großen Titeln, gruppierten Listen und durchscheinender Tab-Leiste; **Hell, Dunkel oder Automatisch** (Schalter oben rechts und in den Einstellungen).
+- **Schnell:** Die App merkt sich deine Daten auf dem Gerät und zeigt sie sofort beim Start, auch ohne Verbindung. Danach lädt sie nur, was sich seit dem letzten Mal geändert hat (einmal am Tag zur Sicherheit alles). Sessions werden gebündelt gespeichert, Preise parallel aktualisiert; gleiche Karten werden dabei nur einmal abgefragt.
 - Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
 
 ## Auf dem iPhone installieren
@@ -49,6 +50,8 @@ Einrichtung:
 4. **Project Settings → API:** Project URL und den `anon`/`publishable` Key in [`config.js`](config.js) eintragen. Den `service_role`/`secret` Key niemals verwenden.
 5. **Authentication → Sign In / Providers → „Confirm email“ ausschalten** (Supabase kennt nur den Hash, eine Bestätigungs-Mail käme nie an). Dann in der App mit E-Mail und Passwort registrieren.
 6. Danach **Authentication → Sign In / Providers → „Allow new users to sign up“ ausschalten**, damit sich niemand Fremdes registriert.
+
+**Schon eingerichtet?** Für den schnellen Abgleich den Inhalt von `schema.sql` einfach noch einmal im SQL Editor ausführen. Das ist gefahrlos und ergänzt nur den Zeitstempel-Trigger, der jede Änderung mit der Serverzeit versieht. Ohne ihn funktioniert die App auch, sie verlässt sich dann auf die Uhr des Handys (mit 10 Minuten Puffer).
 
 Hinweis: Supabase pausiert kostenlose Projekte nach etwa einer Woche ohne Nutzung. Ein Klick auf „Restore“ im Dashboard holt das Projekt mit allen Daten zurück.
 

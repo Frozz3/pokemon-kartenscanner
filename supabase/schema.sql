@@ -71,3 +71,17 @@ alter table public.history enable row level security;
 drop policy if exists "own history" on public.history;
 create policy "own history" on public.history for all to authenticated
   using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+
+-- Fast sync: the server stamps every change with its own clock, so the app only downloads
+-- rows changed since its last visit. Safe to run again.
+create or replace function public.touch_updated_at() returns trigger
+language plpgsql set search_path = '' as $$
+begin new.updated_at := now(); return new; end $$;
+
+do $$ declare t text; begin
+  foreach t in array array['cards','sessions','items','history'] loop
+    execute format('drop trigger if exists touch_updated_at on public.%I', t);
+    execute format('create trigger touch_updated_at before insert or update on public.%I for each row execute function public.touch_updated_at()', t);
+    execute format('create index if not exists %I on public.%I (user_id, updated_at)', t || '_user_updated_idx', t);
+  end loop;
+end $$;

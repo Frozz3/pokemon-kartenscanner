@@ -55,23 +55,78 @@
   const APP_URL = location.origin + location.pathname;
   let sb = null;
 
+  // Local copy of the account's data on this device (IndexedDB), so the app starts instantly and
+  // only changes are downloaded. Keys: "<user>|<table>|<id>".
+  const Cache = (() => {
+    let opening = null;
+    const open = () => opening || (opening = new Promise((res, rej) => {
+      const r = indexedDB.open("kartenscanner-cache", 1);
+      r.onupgradeneeded = () => { const d = r.result; d.createObjectStore("rows", { keyPath: "k" }); d.createObjectStore("meta"); };
+      r.onsuccess = () => res(r.result); r.onerror = () => { opening = null; rej(r.error); };
+    }));
+    const run = async (store, mode, fn) => {
+      const d = await open();
+      return new Promise((res, rej) => { const t = d.transaction(store, mode); let out; try { out = fn(t.objectStore(store)); } catch (e) { rej(e); return; } t.oncomplete = () => res(out && "result" in out ? out.result : undefined); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); });
+    };
+    const key = (uid, t, id) => `${uid}|${t}|${id}`;
+    return {
+      async load(uid) {
+        const rows = await run("rows", "readonly", st => st.getAll(IDBKeyRange.bound(uid + "|", uid + "|￿")));
+        const out = { cards: [], sessions: [], items: [], history: [] };
+        for (const r of rows || []) if (out[r.t]) out[r.t].push(r.o);
+        return out;
+      },
+      put: (uid, t, objs) => run("rows", "readwrite", st => { for (const o of objs) st.put({ k: key(uid, t, o.id), t, o: clone(o) }); }).catch(() => {}),
+      del: (uid, t, ids) => run("rows", "readwrite", st => { for (const id of ids) st.delete(key(uid, t, id)); }).catch(() => {}),
+      getMeta: uid => run("meta", "readonly", st => st.get(uid)).catch(() => null),
+      setMeta: (uid, m) => run("meta", "readwrite", st => { st.put(m, uid); }).catch(() => {}),
+    };
+  })();
+  const CHUNK = 100;
+  const chunks = (a, n = CHUNK) => { const out = []; for (let i = 0; i < a.length; i += n) out.push(a.slice(i, i + n)); return out; };
+  const uidNow = () => state.user && state.user.id;
+
   const Store = {
-    async all(t) {
+    async all(t) { return (await Store.since(t, null)).rows; },
+    // Rows changed after `since` (ISO time; null = everything), with the newest server timestamp seen.
+    async since(t, since) {
+      const rows = []; let max = since || "";
+      for (let from = 0; ; from += 1000) {
+        let q = sb.from(t).select("id,data,updated_at");
+        if (since) q = q.gt("updated_at", since).order("updated_at");
+        const { data, error } = await q.range(from, from + 999);
+        if (error) throw error;
+        for (const r of data) { rows.push({ ...r.data, id: r.id }); if (r.updated_at && r.updated_at > max) max = r.updated_at; }
+        if (data.length < 1000) break;
+      }
+      return { rows, max };
+    },
+    async ids(t) {
       const out = [];
       for (let from = 0; ; from += 1000) {
-        const { data, error } = await sb.from(t).select("id,data").range(from, from + 999);
+        const { data, error } = await sb.from(t).select("id").range(from, from + 999);
         if (error) throw error;
-        out.push(...data.map(r => ({ ...r.data, id: r.id })));
-        if (data.length < 1000) break;
+        out.push(...data.map(r => r.id)); if (data.length < 1000) break;
       }
       return out;
     },
-    async put(t, obj) {
-      const { id, ...rest } = obj;
-      const { error } = await sb.from(t).upsert({ id, data: rest, updated_at: new Date().toISOString() });
-      if (error) throw error;
+    async put(t, obj) { return Store.putMany(t, [obj]); },
+    // One request per 100 rows instead of one per row.
+    async putMany(t, objs) {
+      if (!objs.length) return;
+      const now = new Date().toISOString();
+      for (const part of chunks(objs)) {
+        const { error } = await sb.from(t).upsert(part.map(o => { const { id, ...rest } = o; return { id, data: rest, updated_at: now }; }));
+        if (error) throw error;
+      }
+      if (uidNow()) Cache.put(uidNow(), t, objs);
     },
-    async del(t, id) { const { error } = await sb.from(t).delete().eq("id", id); if (error) throw error; },
+    async del(t, id) { return Store.delMany(t, [id]); },
+    async delMany(t, ids) {
+      if (!ids.length) return;
+      for (const part of chunks(ids)) { const { error } = await sb.from(t).delete().in("id", part); if (error) throw error; }
+      if (uidNow()) Cache.del(uidNow(), t, ids);
+    },
   };
   const Img = {
     path: id => `${state.user.id}/${id}.jpg`,
@@ -85,6 +140,7 @@
       const u = URL.createObjectURL(await Img.blob(id)); state.imgCache.set(id, u); return u;
     },
     async del(id) { if (!id) return; state.imgCache.delete(id); try { await sb.storage.from(BUCKET).remove([Img.path(id)]); } catch (_) {} },
+    async delMany(ids) { ids = ids.filter(Boolean); ids.forEach(id => state.imgCache.delete(id)); for (const part of chunks(ids)) { try { await sb.storage.from(BUCKET).remove(part.map(Img.path)); } catch (_) {} } },
   };
 
   // Data from the first, device-only version (IndexedDB), offered once for import into the account.
@@ -124,6 +180,25 @@
     catch (e) { toast("Speichern fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
     const list = store === "cards" ? state.cards : store === "sessions" ? state.sessions : store === "items" ? state.items : null;
     if (list) { const i = list.findIndex(x => x.id === obj.id); if (i >= 0) list[i] = obj; else list.push(obj); }
+    if (store === "sessions") state.open = state.sessions.find(s => s.status === "open") || null;
+  }
+  const listOf = store => store === "cards" ? state.cards : store === "sessions" ? state.sessions : store === "items" ? state.items : null;
+  async function saveMany(store, objs) {
+    if (!objs.length) return;
+    if (store === "cards") scheduleSnapshot();
+    try { await Store.putMany(store, objs.map(clone)); }
+    catch (e) { toast("Speichern fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
+    const list = listOf(store);
+    if (list) { const pos = new Map(list.map((x, i) => [x.id, i])); for (const o of objs) { const i = pos.get(o.id); if (i === undefined) { pos.set(o.id, list.length); list.push(o); } else list[i] = o; } }
+    if (store === "sessions") state.open = state.sessions.find(s => s.status === "open") || null;
+  }
+  async function removeMany(store, ids) {
+    if (!ids.length) return;
+    if (store === "cards") scheduleSnapshot();
+    try { await Store.delMany(store, ids); }
+    catch (e) { toast("Löschen fehlgeschlagen. Prüfe deine Internetverbindung."); throw e; }
+    const list = listOf(store), gone = new Set(ids);
+    if (list) for (let i = list.length - 1; i >= 0; i--) if (gone.has(list[i].id)) list.splice(i, 1);
     if (store === "sessions") state.open = state.sessions.find(s => s.status === "open") || null;
   }
   async function remove(store, id) {
@@ -257,10 +332,16 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const denom = b && /^\d+$/.test(b.trim()) ? b.trim() : null;
     return { local: normLocal(raw) || null, query: query || null, denom };
   }
-  const tcgCache = new Map();
+  const tcgCache = new Map(), tcgInflight = new Map();
   async function tcgFetch(url, fresh) {
     const hit = tcgCache.get(url);
     if (!fresh && hit && Date.now() - hit.t < 30 * 60e3) return hit.v;
+    if (tcgInflight.has(url)) return tcgInflight.get(url);
+    const p = tcgFetchNet(url).finally(() => tcgInflight.delete(url));
+    tcgInflight.set(url, p);
+    return p;
+  }
+  async function tcgFetchNet(url) {
     let res;
     try { res = await fetch(url, { headers: { accept: "application/json" } }); }
     catch (e) { throw { code: "tcg_network" }; }
@@ -467,26 +548,31 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const sess = state.open, all = openItems(), ok = all.filter(i => i.status === "ok");
     state.busy = true; renderSheet();
     try {
+      // Work out all inventory changes first, then write them in a few bundled requests.
       let merged = 0, added = 0;
+      const byKey = new Map(state.cards.map(c => [cardKey(c), c]));
+      const changed = new Map(), imgGone = [];
       for (const it of ok) {
-        const ex = state.cards.find(c => cardKey(c) === cardKey(it.card));
-        const qty = it.qty || 1;
+        const k = cardKey(it.card), ex = byKey.get(k), qty = it.qty || 1;
         if (ex) {
           const upd = { ...ex, qty: (ex.qty || 1) + qty };
           if (ex.priceSource !== "hand" && num(it.card.priceEur) !== null) Object.assign(upd, { priceEur: it.card.priceEur, priceSource: it.card.priceSource, priceDate: it.card.priceDate, market: it.card.market || null, marketError: it.card.marketError || null });
-          await save("cards", upd);
-          if (it.imageId && it.imageId !== ex.imageId) await Img.del(it.imageId);
+          byKey.set(k, upd); changed.set(upd.id, upd);
+          if (it.imageId && it.imageId !== ex.imageId) imgGone.push(it.imageId);
           merged++;
         } else {
-          await save("cards", { id: it.id, ...it.card, qty, thumb: it.thumb || null, imageId: it.imageId || null, addedAt: Date.now(), sessionId: sess.id });
+          const nc = { id: it.id, ...it.card, qty, thumb: it.thumb || null, imageId: it.imageId || null, addedAt: Date.now(), sessionId: sess.id };
+          byKey.set(k, nc); changed.set(nc.id, nc);
           added++;
         }
       }
+      await saveMany("cards", [...changed.values()]);
       const summary = ok.map(i => ({ name: i.card.name, set: i.card.set || null, number: i.card.number || null, qty: i.qty || 1, priceEur: num(i.card.priceEur), priceSource: i.card.priceSource || null }));
       const total = r2(sessionTotal(ok)) || 0;
       const count = ok.reduce((s, i) => s + (i.qty || 1), 0);
       await save("sessions", { ...sess, status: "done", finishedAt: Date.now(), total, count, summary });
-      for (const it of all) { await remove("items", it.id); if (it.status !== "ok" && it.imageId) await Img.del(it.imageId); }
+      await removeMany("items", all.map(i => i.id));
+      Img.delMany([...imgGone, ...all.filter(i => i.status !== "ok").map(i => i.imageId)]);
       state.busy = false;
       openSheet({ type: "done", total, count, added, merged });
     } catch (e) {
@@ -498,7 +584,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   }
   async function discardSession() {
     if (!state.open) return;
-    for (const it of openItems()) { await remove("items", it.id); if (it.imageId) await Img.del(it.imageId); }
+    const all = openItems();
+    await removeMany("items", all.map(i => i.id));
+    Img.delMany(all.map(i => i.imageId));
     await remove("sessions", state.open.id);
     closeSheet(); render();
   }
@@ -581,24 +669,37 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     finally { if (state.sheet && state.sheet.id === id) { state.sheet.refreshing = false; renderSheet(); } }
     render();
   }
+  let renderTimer = 0;
+  const renderSoon = () => { if (renderTimer) return; renderTimer = setTimeout(() => { renderTimer = 0; render(); }, 250); };
   async function refreshAll(opts = {}) {
     if (state.refreshing || !state.cards.length) return;
     const cards = state.cards.slice();
     state.refreshing = { done: 0, total: cards.length, failed: 0 }; renderInv();
-    let failed = 0, saveErrors = 0; const total = cards.length;
-    try {
-      for (const c of cards) {
-        if (!state.user) break; // logged out meanwhile
-        const res = await lookupMarket(c, { fresh: true });
+    let failed = 0, saveErrors = 0, stop = false; const total = cards.length;
+    // Fresh prices for this run: drop cached answers once, then identical cards share one request.
+    tcgCache.clear();
+    const pending = [];
+    const flush = async (all) => {
+      if (!pending.length || (!all && pending.length < 25)) return;
+      const batch = pending.splice(0, pending.length);
+      try { await saveMany("cards", batch); } catch (_) { saveErrors++; if (saveErrors >= 2) stop = true; }
+    };
+    let next = 0;
+    const worker = async () => {
+      while (!stop && next < cards.length && state.user) {
+        const c = cards[next++];
+        const res = await lookupMarket(c, {});
         const cur = state.cards.find(x => x.id === c.id);
-        if (cur) { try { await save("cards", { ...applyMarket(cur, res), id: c.id }); } catch (_) { saveErrors++; } }
-        if (state.refreshing) state.refreshing.done++;
+        if (cur) pending.push({ ...applyMarket(cur, res), id: c.id });
         if (!res.market) failed++;
-        render();
-        if (state.marketDown || saveErrors >= 3) break;
-        await sleep(120);
+        if (state.refreshing) state.refreshing.done++;
+        if (state.marketDown) stop = true;
+        await flush(false);
+        renderSoon();
       }
-    } finally { state.refreshing = null; render(); }
+    };
+    try { await Promise.all(Array.from({ length: 5 }, worker)); await flush(true); }
+    finally { state.refreshing = null; render(); }
     if (saveErrors) toast("Preise konnten nicht gespeichert werden. Prüfe deine Internetverbindung.");
     else if (!opts.silent || state.marketDown) toast(state.marketDown || (failed ? `Preise aktualisiert. ${failed} von ${total} ohne Marktpreis.` : "Alle Preise aktualisiert."));
     scheduleSnapshot();
@@ -1883,19 +1984,59 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   window.addEventListener("scroll", () => { const t = $("#topbar"); if (t) t.classList.toggle("scrolled", window.scrollY > 4); }, { passive: true });
 
   // ---------- boot ----------
-  async function loadAll() {
-    const [cards, sessions, items] = await Promise.all([Store.all("cards"), Store.all("sessions"), Store.all("items")]);
-    state.cards = cards; state.sessions = sessions; state.items = items;
-    state.open = sessions.filter(x => x.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
+  const SYNC_MARGIN = 10 * 60e3;            // tolerate clock differences between devices
+  const FULL_SYNC_EVERY = 24 * 3600e3;      // complete re-download once a day as a safety net
+  function applyLists(d) {
+    state.cards = d.cards; state.sessions = d.sessions; state.items = d.items; state.history = d.history || [];
+    state.open = state.sessions.filter(x => x.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
+  }
+  // Start from the copy on this device (instant), then fetch only what changed on the server.
+  let syncing = null;
+  function loadAll() { return syncing || (syncing = loadAllNow().finally(() => { syncing = null; })); }
+  async function loadAllNow() {
+    const uid = uidNow(); if (!uid) return;
+    let meta = await Cache.getMeta(uid);
+    if (!state.loaded && meta) {
+      try { applyLists(await Cache.load(uid)); state.loaded = true; state.fromCache = true; render(); } catch (_) { meta = null; }
+    }
+    const full = !meta || !state.loaded || Date.now() - (meta.full || 0) > FULL_SYNC_EVERY;
+    const lists = { cards: state.cards, sessions: state.sessions, items: state.items, history: state.history };
+    const nextMeta = { ...(meta || {}), since: { ...((meta && meta.since) || {}) } };
+    await Promise.all(["cards", "sessions", "items", "history"].map(async t => {
+      try {
+        let since = !full && nextMeta.since[t] ? new Date(Date.parse(nextMeta.since[t]) - SYNC_MARGIN).toISOString() : null;
+        const [{ rows, max }, ids] = await Promise.all([Store.since(t, since), since ? Store.ids(t) : Promise.resolve(null)]);
+        let list;
+        if (!since) list = rows;
+        else {
+          const alive = new Set(ids), byId = new Map(lists[t].filter(o => alive.has(o.id)).map(o => [o.id, o]));
+          rows.forEach(o => byId.set(o.id, o));
+          list = [...byId.values()];
+          const gone = lists[t].filter(o => !alive.has(o.id)).map(o => o.id);
+          if (gone.length) Cache.del(uid, t, gone);
+        }
+        if (rows.length) Cache.put(uid, t, rows);
+        if (!since) { const keep = new Set(rows.map(o => o.id)); const gone = lists[t].filter(o => !keep.has(o.id)).map(o => o.id); if (gone.length) Cache.del(uid, t, gone); }
+        lists[t] = list;
+        if (max) nextMeta.since[t] = max > (nextMeta.since[t] || "") ? max : nextMeta.since[t];
+        if (t === "history") state.historyOk = true;
+      } catch (e) {
+        if (t === "history" && isMissingTable(e)) { state.historyOk = false; lists.history = []; return; }
+        throw e;
+      }
+    }));
+    if (full) nextMeta.full = Date.now();
+    applyLists(lists);
+    await Cache.setMeta(uid, nextMeta);
+    state.fromCache = false;
     // Scans left half-done (app closed mid-recognition) can't finish any more.
-    for (const it of items) if (it.status === "pending" && !state.running.has(it.id) && Date.now() - (it.createdAt || 0) > 3 * 60e3)
-      await save("items", { ...it, status: it.card ? "ok" : "error", error: it.card ? null : "Die Erkennung wurde unterbrochen. Tippe auf „Erneut erkennen“." }).catch(() => {});
-    try { state.history = await Store.all("history"); state.historyOk = true; }
-    catch (e) { state.history = []; state.historyOk = !isMissingTable(e); }
+    const stale = state.items.filter(it => it.status === "pending" && !state.running.has(it.id) && Date.now() - (it.createdAt || 0) > 3 * 60e3)
+      .map(it => ({ ...it, status: it.card ? "ok" : "error", error: it.card ? null : "Die Erkennung wurde unterbrochen. Tippe auf „Erneut erkennen“." }));
+    if (stale.length) await saveMany("items", stale).catch(() => {});
     state.loaded = true; state.lastSync = Date.now();
   }
   function clearData() {
-    state.cards = []; state.sessions = []; state.items = []; state.open = null; state.loaded = false;
+    state.cards = []; state.sessions = []; state.items = []; state.history = []; state.open = null; state.loaded = false; state.fromCache = false;
     state.imgCache.forEach(u => { try { URL.revokeObjectURL(u); } catch (_) {} }); state.imgCache.clear();
   }
   async function onAuth(event, session) {
@@ -1908,7 +2049,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (event === "INITIAL_SESSION" && idleExpired()) { idleLogout(); return; }
     markActive(true);
     state.user = user; clearData(); state.authMsg = null; state.authErr = null; render();
-    try { await loadAll(); } catch (e) { toast("Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); }
+    try { await loadAll(); } catch (e) { toast(state.loaded ? "Keine Verbindung. Du siehst den zuletzt geladenen Stand." : "Deine Daten ließen sich nicht laden. Prüfe deine Verbindung."); state.loaded = true; }
+    render();
     maybeAutoRefresh();
     const L = await Legacy.read();
     state.legacy = L && ((L.cards || []).length || (L.sessions || []).length || (L.items || []).length) ? L : null;
