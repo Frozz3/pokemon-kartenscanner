@@ -41,4 +41,18 @@ cat > "$SPL/Contents.json" <<'JSON'
   ],
   "info": { "author": "xcode", "version": 1 } }
 JSON
+# Hide the scroll indicators: CSS can't reach the web view's own scroll bar on iOS.
+SB="$APP/Base.lproj/Main.storyboard"
+grep -q 'customClass="CAPBridgeViewController" customModule="Capacitor"' "$SB"
+sed -i '' 's/customClass="CAPBridgeViewController" customModule="Capacitor"/customClass="MainViewController" customModule="App" customModuleProvider="target"/' "$SB"
+cat >> "$APP/AppDelegate.swift" <<'SWIFT'
+
+class MainViewController: CAPBridgeViewController {
+    override func capacitorDidLoad() {
+        webView?.scrollView.showsVerticalScrollIndicator = false
+        webView?.scrollView.showsHorizontalScrollIndicator = false
+    }
+}
+SWIFT
+
 echo "Xcode project customized."

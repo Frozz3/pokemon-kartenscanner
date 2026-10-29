@@ -65,7 +65,8 @@
   color-scheme: dark;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; }
 /* Text sizes are in rem (written as calc(px / 17)), so 1rem is the iOS body size: 17px by default,
    and on iPhone it follows the system text size (Dynamic Type). Bar chrome stays in px, like iOS. */
 html { -webkit-text-size-adjust: 100%; background: var(--bg); font-size: 17px; }
