@@ -1261,7 +1261,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.problem || (state.authReady && (!state.user || state.loaded))) hideSplash();
     if (!authed) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
     document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
-    $("#navDot").innerHTML = state.open && state.tab !== "scan" ? '<span class="dot" title="Offene Session"></span>' : "";
+    const openDot = state.open && state.tab !== "scan";
+    $("#navDot").innerHTML = openDot ? '<span class="dot" title="Offene Session"></span>' : "";
+    // VoiceOver doesn't read the dot's title, so the tab itself says it.
+    const scanTab = $('.nav button[data-tab="scan"]');
+    if (openDot) scanTab.setAttribute("aria-label", "Scannen, offene Session"); else scanTab.removeAttribute("aria-label");
     $("#view-scan").hidden = state.tab !== "scan";
     $("#view-inv").hidden = state.tab !== "inv";
     $("#view-hist").hidden = state.tab !== "hist";
@@ -2509,7 +2513,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
       case "logout": closeSheet(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
-      case "theme-toggle": setTheme(isDark() ? "light" : "dark"); break;
       case "theme-set": setTheme(el.dataset.theme); break;
       case "login-email": openSheet({ type: "login-email" }); break;
       case "pw-change": openSheet({ type: "pw-change" }); break;
@@ -2537,16 +2540,12 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   // ---------- appearance (light / dark / automatic) ----------
   const darkMQ = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
   const isDark = () => settings.theme === "dark" || (settings.theme === "auto" && !!(darkMQ && darkMQ.matches));
-  const ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>';
-  const ICON_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a8.5 8.5 0 1 0 11.1 11.1z"/></svg>';
   function applyTheme() {
     const t = settings.theme;
     if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
     const dark = isDark();
     document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.setAttribute("content", dark ? "#0B0D1A" : "#F6F4EF"); m.removeAttribute("media"); });
     if (!camOpen()) statusBar(dark);
-    const b = $("#themeBtn");
-    if (b) { b.innerHTML = dark ? ICON_SUN : ICON_MOON; b.setAttribute("aria-label", dark ? "Helle Darstellung" : "Dunkle Darstellung"); }
   }
   function setTheme(t) { settings.theme = t; applyTheme(); if (state.sheet && state.sheet.type === "settings") renderSheet(); }
   if (darkMQ) { const onChange = () => { if (settings.theme === "auto") applyTheme(); }; darkMQ.addEventListener ? darkMQ.addEventListener("change", onChange) : darkMQ.addListener(onChange); }
