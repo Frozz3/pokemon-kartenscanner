@@ -1,7 +1,7 @@
 // Offline support for the app shell. Network first, so updates arrive right away; cache as fallback.
 // API calls (TCGdex, Anthropic) are never cached here.
-const CACHE = "kartenscanner-v27";
-const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "vendor/supabase.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/apple-touch-icon.png"];
+const CACHE = "kartenscanner-v28";
+const SHELL = ["./", "index.html", "styles.css", "app.js", "sync.js", "config.js", "vendor/supabase.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

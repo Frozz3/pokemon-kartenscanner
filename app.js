@@ -145,6 +145,9 @@
       setMeta: (uid, m) => run("meta", "readwrite", st => { st.put(m, uid); }).catch(() => {}),
     };
   })();
+  // In a browser others may use, signing out also removes the collection from this device.
+  // The iOS app keeps it: it is a personal device, and the copy makes restoring an account possible.
+  const dropDeviceCopy = () => { if (!NATIVE && state.user) Cache.clear(state.user.id); };
   const CHUNK = 100;
   const chunks = (a, n = CHUNK) => { const out = []; for (let i = 0; i < a.length; i += n) out.push(a.slice(i, i + n)); return out; };
   const uidNow = () => state.user && state.user.id;
@@ -838,7 +841,12 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     let n = 0; const total = imgs.length + ["cards", "sessions", "items"].reduce((t, k) => t + (data[k] || []).length, 0);
     const tick = () => { n++; if (progress) progress(n, total); };
     for (const v of imgs) { if (v && v.id && v.data) { try { await Img.put(v.id, v.data); } catch (_) {} } tick(); }
-    for (const k of ["cards", "sessions", "items"]) for (const v of (data[k] || [])) { if (v && v.id) await Store.put(k, v); tick(); }
+    // 100 rows per request instead of one request per row.
+    for (const k of ["cards", "sessions", "items"]) {
+      const rows = data[k] || [];
+      await Store.putMany(k, rows.filter(v => v && v.id));
+      n += rows.length; if (progress) progress(n, total);
+    }
   }
   async function migrateLegacy() {
     const data = state.legacy; if (!data || state.migrating) return;
@@ -877,7 +885,10 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       await importRecords(data);
       await loadAll(); closeSheet(); render();
       toast(`Backup eingespielt: ${(data.cards || []).length} Karten.`);
-    } catch (e) { toast("Die Datei ist kein gültiges Kartenscanner-Backup."); }
+    } catch (e) {
+      if (e instanceof SyntaxError || e.message === "format") toast("Die Datei ist kein gültiges Kartenscanner-Backup.");
+      else { logErr("Import", e); toast("Import abgebrochen. Prüfe deine Internetverbindung und versuch es erneut."); }
+    }
   }
 
   // ---------- duplicates ----------
@@ -2513,7 +2524,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "key-del": settings.apiKey = ""; toast("Schlüssel entfernt."); if (state.sheet) { state.sheet.edit = false; renderSheet(); } render(); break;
       case "export": exportData(); break;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
-      case "logout": closeSheet(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
+      case "logout": closeSheet(); dropDeviceCopy(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
       case "theme-set": setTheme(el.dataset.theme); break;
       case "login-email": openSheet({ type: "login-email" }); break;
@@ -2576,11 +2587,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.open = state.sessions.filter(x => x.status === "open").sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
   }
   // Start from the copy on this device (instant), then fetch only what changed on the server.
-  // Safety net: if the server suddenly has nothing at all while this device still has data, keep the
-  // device copy (it can be restored in the admin area) instead of wiping it.
   function dropCached(uid, t, gone, serverCount) {
     if (!gone.length) return;
-    if (serverCount === 0) { logErr("Abgleich", `Server meldet ${t} leer, ${gone.length} Einträge bleiben auf dem Gerät`); return; }
+    if (KSSync.suspiciousLoss(gone.length, serverCount)) { logErr("Abgleich", `Server meldet ${serverCount} Einträge in ${t}, ${gone.length} bleiben auf dem Gerät`); return; }
     Cache.del(uid, t, gone);
   }
   let syncing = null;
@@ -2598,17 +2607,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       try {
         let since = !full && nextMeta.since[t] ? new Date(Date.parse(nextMeta.since[t]) - SYNC_MARGIN).toISOString() : null;
         const [{ rows, max }, ids] = await Promise.all([Store.since(t, since), since ? Store.ids(t) : Promise.resolve(null)]);
-        let list;
-        if (!since) list = rows;
-        else {
-          const alive = new Set(ids), byId = new Map(lists[t].filter(o => alive.has(o.id)).map(o => [o.id, o]));
-          rows.forEach(o => byId.set(o.id, o));
-          list = [...byId.values()];
-          const gone = lists[t].filter(o => !alive.has(o.id)).map(o => o.id);
-          dropCached(uid, t, gone, ids.length);
-        }
+        const { list, gone } = KSSync.mergeDelta(lists[t], rows, since ? ids : null);
         if (rows.length) Cache.put(uid, t, rows);
-        if (!since) { const keep = new Set(rows.map(o => o.id)); const gone = lists[t].filter(o => !keep.has(o.id)).map(o => o.id); dropCached(uid, t, gone, rows.length); }
+        dropCached(uid, t, gone, since ? ids.length : rows.length);
         lists[t] = list;
         if (max) nextMeta.since[t] = max > (nextMeta.since[t] || "") ? max : nextMeta.since[t];
         if (t === "history") state.historyOk = true;
@@ -2711,6 +2712,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const t = $("#toast"); if (t && t.dataset.kind === "idle") t.hidden = true;
     const label = idleLabel();
     state.authMode = "login"; state.authErr = null;
+    dropDeviceCopy();
     try { await sb.auth.signOut({ scope: "local" }); } catch (_) {}
     state.user = null; clearData();
     state.authMsg = reason === "close" ? "Du wurdest abgemeldet, weil die App geschlossen wurde." : `Du wurdest nach ${label} ohne Aktivität abgemeldet.`;

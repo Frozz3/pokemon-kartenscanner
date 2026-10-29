@@ -3,7 +3,8 @@
   "private": true,
   "description": "Pokémon-Karten scannen und bewerten. Web-App (GitHub Pages) und iOS-App (Capacitor, zum Sideloaden).",
   "scripts": {
-    "build:web": "node scripts/build-web.mjs"
+    "build:web": "node scripts/build-web.mjs",
+    "test": "node --test"
   },
   "devDependencies": {
     "@capacitor/cli": "8.5.3",
