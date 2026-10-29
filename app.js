@@ -1257,7 +1257,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   function render() {
     const authed = !!state.user && !state.recovery;
     $("#view-auth").hidden = authed; $("#nav").hidden = !authed; $("#topRight").hidden = !authed; $("#subtitle").hidden = !authed;
-    $("#pageTitle").textContent = $("#miniTitle").textContent = authed ? (TAB_TITLES[state.tab] || "Kartenscanner") : "Kartenscanner";
+    // Login: the icon carries the name, so no large title above it.
+    $("#brand").hidden = !authed;
+    $("#pageTitle").textContent = $("#miniTitle").textContent = authed ? (TAB_TITLES[state.tab] || "Kartenscanner") : "";
     if (state.problem || (state.authReady && (!state.user || state.loaded))) hideSplash();
     if (!authed) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
     document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
@@ -1380,7 +1382,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <button class="btn primary full" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Einen Moment …" : T[2]}</button>
         </form>
         <div class="auth-links">${links}</div>
-        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Wende dich an den Admin der App, er kann dir ein vorläufiges Passwort geben.</p>` : ""}
+        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Der Admin der App kann dir ein vorläufiges Passwort geben.</p>` : ""}
         ${m === "signup" ? `<p class="fine" style="margin:0">Deine E-Mail-Adresse wird nur unkenntlich gespeichert. Deshalb gibt es keinen Link zum Zurücksetzen: Merk dir dein Passwort gut.</p>` : ""}
       </section>`;
     for (const [id, val] of kept) { const el = id && document.getElementById(id); if (el && val) el.value = val; }
@@ -2555,6 +2557,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   // Pulling down past the top stretches the large title slightly, like iOS.
   function updateBar() {
     const t = $("#topbar"), b = $("#brand"); if (!t || !b) return;
+    if (b.hidden) { t.classList.remove("scrolled", "titled"); return; }
     const barBottom = t.getBoundingClientRect().bottom, r = b.getBoundingClientRect(), h1 = b.firstElementChild.getBoundingClientRect();
     t.classList.toggle("scrolled", r.top < barBottom - 1);
     t.classList.toggle("titled", h1.top + h1.height * 0.7 < barBottom);

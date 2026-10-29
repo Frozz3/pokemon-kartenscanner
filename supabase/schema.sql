@@ -5,22 +5,25 @@
 -- ========== Tabellen ==========
 -- Jede Zeile gehört genau einem Konto (user_id), der Inhalt liegt als JSON in "data".
 create table if not exists public.cards (
-  id text primary key,
+  id text not null,
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   data jsonb not null,
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
 );
 create table if not exists public.sessions (
-  id text primary key,
+  id text not null,
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   data jsonb not null,
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
 );
 create table if not exists public.items (
-  id text primary key,
+  id text not null,
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   data jsonb not null,
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
 );
 -- history: ein Schnappschuss pro Tag für die Wertentwicklung (id = Datum, z. B. 2026-10-26).
 create table if not exists public.history (
@@ -30,6 +33,18 @@ create table if not exists public.history (
   updated_at timestamptz not null default now(),
   primary key (user_id, id)
 );
+-- Ältere Installationen: Schlüssel war nur "id". Dann scheitert ein Import in ein zweites Konto, solange das
+-- erste Konto dieselben Einträge noch hat. Hier auf (user_id, id) umstellen (einmalig, Daten bleiben erhalten).
+do $$ declare t text; cn text; begin
+  foreach t in array array['cards','sessions','items'] loop
+    select conname into cn from pg_constraint
+     where conrelid = format('public.%I', t)::regclass and contype = 'p' and cardinality(conkey) = 1;
+    if cn is not null then
+      execute format('alter table public.%I drop constraint %I', t, cn);
+      execute format('alter table public.%I add primary key (user_id, id)', t);
+    end if;
+  end loop;
+end $$;
 create index if not exists cards_user_idx on public.cards (user_id);
 create index if not exists sessions_user_idx on public.sessions (user_id);
 create index if not exists items_user_idx on public.items (user_id);
@@ -109,7 +124,7 @@ values ('card-images', 'card-images', false, 5242880, array['image/jpeg'])
 on conflict (id) do nothing;
 
 -- Fotos liegen unter <user-id>/<bild-id>.jpg; jeder darf nur seinen eigenen Ordner nutzen.
--- Admins dürfen Ordner auflisten und löschen (zum Entfernen eines Kontos), aber keine Fotos ansehen.
+-- Admins dürfen alle Fotos lesen (zum Wiederherstellen eines Kontos) und löschen (zum Entfernen eines Kontos).
 drop policy if exists "own images select" on storage.objects;
 create policy "own images select" on storage.objects for select to authenticated
   using (bucket_id = 'card-images' and (

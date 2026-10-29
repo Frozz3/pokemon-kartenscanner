@@ -107,7 +107,7 @@ Danach in der App unter Einstellungen → **Passwort ändern** ein neues Passwor
 - Im Repository stehen keine Geheimnisse, nur der öffentliche Supabase-Schlüssel. Deine Daten schützt die Row Level Security; der Anthropic-Schlüssel bleibt auf dem Gerät und gilt nur für das Konto, mit dem er eingetragen wurde.
 - **Content Security Policy** (in `index.html`): Die App lädt nur eigene Dateien und spricht nur mit Supabase, TCGdex, Anthropic und GitHub (Update-Prüfung). Eingeschleuster Code und Anfragen an fremde Server werden blockiert. Wer das kleine Inline-Skript im `<head>` ändert, muss den Hash in der Policy anpassen.
 - Der App-Build nutzt nur GitHubs eigene Actions, fest auf geprüfte Versionen (Commit) gepinnt.
-- Jedes Konto sieht nur seine eigenen Daten (Row Level Security). Gesperrte Konten kommen an nichts mehr heran. Admins sehen von anderen nur Zahlen (Kartenanzahl, Wert, Scans), keine Karten oder Fotos; alle Admin-Funktionen prüfen die Rechte auf dem Server.
+- Jedes Konto sieht nur seine eigenen Daten (Row Level Security). Gesperrte Konten kommen an nichts mehr heran. Die App zeigt Admins von anderen nur Zahlen (Kartenanzahl, Wert, Scans), keine Karten oder Fotos. Technisch dürfen Admins aber die Fotos aller Konten lesen und löschen (nötig zum Wiederherstellen und Entfernen eines Kontos). Alle Admin-Funktionen prüfen die Rechte auf dem Server.
 - Offene Registrierung: Supabase begrenzt Anmeldeversuche pro IP. Wer einen Spam-Schutz will, kann unter Authentication → Attack Protection ein CAPTCHA aktivieren (braucht dann eine kleine Anpassung in der App).
 - Für Sideloadly/SideStore am besten eine zweite Apple-ID nehmen, nicht die Haupt-ID.
 
