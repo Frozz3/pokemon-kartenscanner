@@ -98,7 +98,6 @@
       get auto() { return read("auto", "1") === "1"; }, set auto(v) { write("auto", v ? "1" : "0"); },
       get setSort() { return read("setsort", "progress"); }, set setSort(v) { write("setsort", v); },
       get cardSort() { return read("cardsort", "num"); }, set cardSort(v) { write("cardsort", v); },
-      get theme() { const t = read("theme", "auto"); return t === "light" || t === "dark" ? t : "auto"; }, set theme(v) { write("theme", v === "auto" ? "" : v); },
       get idle() { const n = Number(read("idle", "15")); return isFinite(n) ? n : 15; }, set idle(v) { write("idle", String(v)); },
     };
   })();
@@ -2276,8 +2275,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       const link = (act, label, val) => `<button class="cell link" type="button" data-act="${act}"><span>${label}</span><span class="tail">${val ? `<span class="val">${esc(val)}</span>` : ""}<span class="chev"></span></span></button>`;
       const legacyLogin = u && !isEmailId(u.email);
       body = `<div class="stack settings">
-        <section><h3 class="gh">Darstellung</h3>
-          <div class="group pad"><div class="seg" role="group" aria-label="Darstellung">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button type="button" data-act="theme-set" data-theme="${k}" aria-pressed="${settings.theme === k}">${l}</button>`).join("")}</div></div></section>
         <section><h3 class="gh">Kamera</h3>
           <div class="group">${sw("set-auto", settings.auto, "Automatisch auslösen")}${sw("set-sound", settings.sound, "Kassen-Sound")}</div>
           <p class="gf">Die Kamera löst aus, sobald eine Karte ruhig im Rahmen liegt.</p></section>
@@ -2526,7 +2523,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
       case "logout": closeSheet(); dropDeviceCopy(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
-      case "theme-set": setTheme(el.dataset.theme); break;
       case "login-email": openSheet({ type: "login-email" }); break;
       case "pw-change": openSheet({ type: "pw-change" }); break;
       case "copy-sql": { const t = state.sheet && state.sheet.sql; if (t && navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast("SQL kopiert."), () => toast("Kopieren ging nicht. Markiere den Text und kopier ihn von Hand.")); break; }
@@ -2550,18 +2546,16 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   $("#invSort").value = state.sort;
   $("#invSort").addEventListener("change", e => { state.sort = e.target.value; settings.sort = state.sort; renderInv(); });
 
-  // ---------- appearance (light / dark / automatic) ----------
+  // ---------- appearance: follows the system (Apple: no app-specific light/dark switch) ----------
   const darkMQ = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-  const isDark = () => settings.theme === "dark" || (settings.theme === "auto" && !!(darkMQ && darkMQ.matches));
+  const isDark = () => !!(darkMQ && darkMQ.matches);
+  try { localStorage.removeItem("ks-theme"); } catch (_) {} // choice stored by older versions
   function applyTheme() {
-    const t = settings.theme;
-    if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
     const dark = isDark();
     document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.setAttribute("content", dark ? "#0B0D1A" : "#F6F4EF"); m.removeAttribute("media"); });
     if (!camOpen()) statusBar(dark);
   }
-  function setTheme(t) { settings.theme = t; applyTheme(); if (state.sheet && state.sheet.type === "settings") renderSheet(); }
-  if (darkMQ) { const onChange = () => { if (settings.theme === "auto") applyTheme(); }; darkMQ.addEventListener ? darkMQ.addEventListener("change", onChange) : darkMQ.addListener(onChange); }
+  if (darkMQ) { darkMQ.addEventListener ? darkMQ.addEventListener("change", applyTheme) : darkMQ.addListener(applyTheme); }
   applyTheme();
   // Hairline under the navigation bar once the page scrolls, like iOS.
   // The large title scrolls under the bar; once it is mostly hidden, the small title fades in at the centre.
