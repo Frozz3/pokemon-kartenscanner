@@ -1,8 +1,6 @@
 # Pokémon Kartenscanner
 
-Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardmarket-Preisen bewerten und in einem Inventar sammeln.
-
-**Live:** https://frozz3.github.io/pokemon-kartenscanner/
+iOS-App fürs iPhone: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardmarket-Preisen bewerten und in einem Inventar sammeln.
 
 ## Funktionen
 
@@ -23,11 +21,10 @@ Web-App fürs Handy: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardm
 - **Design im iOS-Stil** mit Systemschrift, großen Titeln, die beim Scrollen in die Leiste wandern, gruppierten Listen und Einstellungen wie in der Einstellungen-App (mit Schaltern für Auto-Auslöser und Ton); **Hell oder dunkel automatisch wie das System**, ohne eigenen Schalter in der App (so empfiehlt es Apple).
 - **Bewegung wie auf dem iPhone:** Fenster gleiten von unten herein und lassen sich nach unten wegwischen, Knöpfe federn beim Tippen, Seitenwechsel blenden weich über. Am Ende einer Session zählt der Endbetrag hoch, landet mit Kassen-Sound und einem Münzregen. Eigener Startbildschirm (hell und dunkel) für alle aktuellen iPhones. Wer in iOS „Bewegung reduzieren“ eingeschaltet hat, bekommt keine Animationen.
 - **Schnell:** Die App merkt sich deine Daten auf dem Gerät und zeigt sie sofort beim Start, auch ohne Verbindung. Danach lädt sie nur, was sich seit dem letzten Mal geändert hat (einmal am Tag zur Sicherheit alles). Sessions werden gebündelt gespeichert, Preise parallel aktualisiert; gleiche Karten werden dabei nur einmal abgefragt.
-- Funktioniert als installierbare Web-App (PWA), die App-Oberfläche lädt auch offline.
 
-## Als iOS-App (Sideloading, ohne Mac)
+## Installation (Sideloading, ohne Mac)
 
-Dieselbe App gibt es auch als echte iOS-App: eigenes Icon und Startbildschirm, kein Safari drumherum, Kamera-Erlaubnis bleibt gespeichert, Vibration beim Scannen, Löschen und am Session-Ende, Backup über das iOS-Teilen-Menü.
+Die App läuft als echte iOS-App: eigenes Icon und Startbildschirm, kein Safari drumherum, Kamera-Erlaubnis bleibt gespeichert, Vibration beim Scannen, Löschen und am Session-Ende, Backup über das iOS-Teilen-Menü.
 
 GitHub baut sie bei jeder Änderung automatisch auf einem Mac in der Cloud (Workflow `.github/workflows/ios-app.yml`) und legt die neueste Datei hier ab:
 **https://github.com/Frozz3/pokemon-kartenscanner/releases/download/ios-latest/Kartenscanner.ipa**
@@ -48,23 +45,13 @@ Wichtig bei einer kostenlosen Apple-ID:
 - Die App zeigt unter Einstellungen → App ihre Version und meldet, wenn eine neuere bereitliegt.
 - Mit einem bezahlten Apple-Entwicklerkonto (99 €/Jahr) gilt die Signatur 1 Jahr.
 
-Die Web-Version unter der Live-Adresse funktioniert parallel weiter.
-
-## Auf dem iPhone installieren
-
-1. Die Live-Adresse in **Safari** öffnen.
-2. Teilen-Symbol → **Zum Home-Bildschirm**.
-3. App vom Home-Bildschirm starten, Zahnrad oben rechts → API-Schlüssel eintragen.
-
-Auf Android: in Chrome öffnen → Menü → **App installieren**.
-
 ## API-Schlüssel (für die Erkennung per Foto)
 
 1. In der [Anthropic Console](https://console.anthropic.com/settings/keys) einen Schlüssel erstellen und Guthaben aufladen.
 2. Am besten ein monatliches Ausgabelimit setzen.
 3. In der App unter Einstellungen eintragen.
 
-Der Schlüssel wird **nur im Browser des Geräts** gespeichert (localStorage) und direkt an `api.anthropic.com` gesendet. Er steht nie im Code oder im Repository. Jeder Scan verbraucht etwas API-Guthaben; Haiku ist günstiger, Sonnet genauer.
+Der Schlüssel wird **nur auf dem Gerät** gespeichert (localStorage) und direkt an `api.anthropic.com` gesendet. Er steht nie im Code oder im Repository. Jeder Scan verbraucht etwas API-Guthaben; Haiku ist günstiger, Sonnet genauer.
 
 ## Daten und Login (Supabase)
 
@@ -74,11 +61,10 @@ Einrichtung:
 
 1. Auf supabase.com ein Konto anlegen → **New project**, Region **Central EU (Frankfurt)**.
 2. **SQL Editor** → Inhalt von [`supabase/schema.sql`](supabase/schema.sql) einfügen → **Run**.
-3. **Authentication → URL Configuration:** Site URL `https://frozz3.github.io/pokemon-kartenscanner/`, dieselbe Adresse auch unter Redirect URLs eintragen.
-4. **Project Settings → API:** Project URL und den `anon`/`publishable` Key in [`config.js`](config.js) eintragen. Den `service_role`/`secret` Key niemals verwenden.
-5. **Authentication → Sign In / Providers → „Confirm email“ ausschalten** (Supabase kennt nur den Hash, eine Bestätigungs-Mail käme nie an).
-6. **„Allow new users to sign up“ eingeschaltet lassen**, damit sich andere selbst registrieren können. (Soll die App privat bleiben: ausschalten.)
-7. In der App registrieren. **Das älteste Konto wird automatisch Admin** (beim Ausführen von `schema.sql`, solange es noch keinen Admin gibt). Prüfen mit `select * from public.admins;`, weitere Admins mit `insert into public.admins (user_id) values ('<Konto-ID aus Authentication → Users>');`.
+3. **Project Settings → API:** Project URL und den `anon`/`publishable` Key in [`config.js`](config.js) eintragen. Den `service_role`/`secret` Key niemals verwenden.
+4. **Authentication → Sign In / Providers → „Confirm email“ ausschalten** (Supabase kennt nur den Hash, eine Bestätigungs-Mail käme nie an).
+5. **„Allow new users to sign up“ eingeschaltet lassen**, damit sich andere selbst registrieren können. (Soll die App privat bleiben: ausschalten.)
+6. In der App registrieren. **Das älteste Konto wird automatisch Admin** (beim Ausführen von `schema.sql`, solange es noch keinen Admin gibt). Prüfen mit `select * from public.admins;`, weitere Admins mit `insert into public.admins (user_id) values ('<Konto-ID aus Authentication → Users>');`.
 
 **Schon eingerichtet?** Nach Updates den Inhalt von `schema.sql` einfach noch einmal im SQL Editor ausführen. Das ist gefahrlos, vorhandene Daten bleiben erhalten; es ergänzt Profile, Sperren, Verbrauchszähler, Admin-Funktionen und den Zeitstempel-Trigger für den schnellen Abgleich.
 
@@ -131,7 +117,7 @@ Reines HTML, CSS und JavaScript ohne Build-Schritt:
 | `.github/workflows/ios-app.yml` | Baut die unsignierte `.ipa` und veröffentlicht sie als Release `ios-latest` |
 | `manifest.webmanifest`, `icons/` | PWA-Angaben, App-Icons und Startbilder (`icons/splash/`) |
 
-GitHub Pages: Settings → Pages → Source „Deploy from a branch“, Branch `main`, Ordner `/ (root)`.
+Dieselben Dateien laufen auch als Web-App im Browser. GitHub Pages ist dafür derzeit aus; bei Bedarf wieder einschalten unter Settings → Pages → Source „Deploy from a branch“, Branch `main`, Ordner `/ (root)`.
 
 ## Hinweis
 
