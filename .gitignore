@@ -1,5 +1,5 @@
 node_modules/
 www/
-ios/
+/ios/
 graphify-out/
-android/
+/android/
