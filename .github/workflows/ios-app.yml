@@ -1,5 +1,6 @@
 # Builds the iOS app (unsigned .ipa) on a Mac in the cloud and publishes it as the release "ios-latest".
 # Install it on the iPhone from a Windows PC with Sideloadly (it signs with your Apple ID).
+# Instance settings (repository variables): SUPABASE_URL, SUPABASE_KEY, optional APP_ID, APP_NAME.
 # Supply chain: only GitHub's own actions, pinned to exact commits; no third-party actions.
 name: iOS-App bauen
 
@@ -20,6 +21,11 @@ jobs:
   ipa:
     runs-on: macos-15
     timeout-minutes: 40
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ vars.SUPABASE_KEY }}
+      APP_ID: ${{ vars.APP_ID }}
+      APP_NAME: ${{ vars.APP_NAME }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 

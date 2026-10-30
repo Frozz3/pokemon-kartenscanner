@@ -6,7 +6,7 @@ APP=ios/App/App
 PL="$APP/Info.plist"
 PB=/usr/libexec/PlistBuddy
 put() { "$PB" -c "Delete :$1" "$PL" >/dev/null 2>&1 || true; "$PB" -c "Add :$1 $2 $3" "$PL"; }
-put CFBundleDisplayName string "Kartenscanner"
+put CFBundleDisplayName string "${APP_NAME:-Kartenscanner}"
 put NSCameraUsageDescription string "Die Kamera wird zum Scannen deiner Pokémon-Karten verwendet."
 put NSPhotoLibraryUsageDescription string "Damit du Kartenfotos aus deiner Mediathek hinzufügen kannst."
 put ITSAppUsesNonExemptEncryption bool false

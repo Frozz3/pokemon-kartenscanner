@@ -1,3 +1,5 @@
+/* Safe areas use Capacitor's --safe-area-inset-* where present (Android WebView reports env() as 0),
+   else env(). */
 /* iOS-style app shell: large-title navigation bar, inset grouped lists, translucent tab bar,
    card sheets with a grabber; cards are shown at the real 63:88 TCG ratio. */
 /* Colours from the app icon: Pokémon-card yellow, deep navy, card red, plus the white/ice-blue
@@ -64,9 +66,9 @@ html { -webkit-text-size-adjust: 100%; background: var(--bg); font-size: 17px; }
 body {
   margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 1rem; line-height: 1.35; letter-spacing: -.01em;
   -webkit-font-smoothing: antialiased;
-  padding-left: max(16px, env(safe-area-inset-left, 0px));
-  padding-right: max(16px, env(safe-area-inset-right, 0px));
-  padding-block: 0 calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 28px);
+  padding-left: max(16px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
+  padding-right: max(16px, var(--safe-area-inset-right, env(safe-area-inset-right, 0px)));
+  padding-block: 0 calc(var(--nav-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)) + 28px);
   -webkit-tap-highlight-color: transparent;
 }
 img { max-width: 100%; }
@@ -82,9 +84,9 @@ a { color: var(--link); text-decoration: none; }
    version fades in at the centre, like UINavigationBar with prefersLargeTitles. */
 .top {
   position: sticky; top: 0; z-index: 5;
-  margin: 0 calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
-  padding: env(safe-area-inset-top, 0px) max(8px, env(safe-area-inset-right, 0px)) 0 max(8px, env(safe-area-inset-left, 0px));
-  height: calc(44px + env(safe-area-inset-top, 0px));
+  margin: 0 calc(-1 * max(16px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px))));
+  padding: var(--safe-area-inset-top, env(safe-area-inset-top, 0px)) max(8px, var(--safe-area-inset-right, env(safe-area-inset-right, 0px))) 0 max(8px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
+  height: calc(44px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px)));
   display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px;
   background: transparent; transition: background-color .2s;
 }
@@ -241,7 +243,7 @@ a { color: var(--link); text-decoration: none; }
 .cline { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 10px; align-items: center; padding: 8px 8px 8px 16px; background: var(--surface); font-size: calc(15rem / 17); }
 .icon-del { width: 36px; height: 36px; border: 0; border-radius: 50%; background: transparent; color: var(--bad); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .icon-del svg { width: 19px; height: 19px; }
-.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 14px); z-index: 40; display: flex; align-items: center; gap: 14px; background: var(--hud); color: #fff; padding: 12px 14px 12px 18px; border-radius: 14px; font-size: calc(15rem / 17); width: max-content; max-width: min(92vw, 520px); box-shadow: 0 8px 30px rgba(0,0,0,.25); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)) + 14px); z-index: 40; display: flex; align-items: center; gap: 14px; background: var(--hud); color: #fff; padding: 12px 14px 12px 18px; border-radius: 14px; font-size: calc(15rem / 17); width: max-content; max-width: min(92vw, 520px); box-shadow: 0 8px 30px rgba(0,0,0,.25); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
 .toast.pop { animation: toastin .45s var(--spring); }
 @keyframes toastin { from { opacity: 0; transform: translate(-50%, 16px) scale(.94); } to { opacity: 1; transform: translate(-50%, 0); } }
 .toast-btn { border: 0; background: transparent; color: #FFCB05; font-weight: 600; padding: 6px 8px; cursor: pointer; white-space: nowrap; }
@@ -305,7 +307,7 @@ input[type=search].field::-webkit-search-decoration { -webkit-appearance: none; 
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
   background: var(--bar); -webkit-backdrop-filter: saturate(180%) blur(30px); backdrop-filter: saturate(180%) blur(30px);
   box-shadow: 0 -.5px 0 var(--line);
-  padding: 4px max(8px, env(safe-area-inset-right, 0px)) calc(2px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
+  padding: 4px max(8px, var(--safe-area-inset-right, env(safe-area-inset-right, 0px))) calc(2px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) max(8px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
 }
 .nav .in { max-width: 720px; margin: 0 auto; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
 .nav button { border: 0; background: transparent; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0 2px; color: var(--tab-off); font-size: 11px; font-weight: 500; min-width: 0; cursor: pointer; letter-spacing: .01em; }
@@ -319,7 +321,7 @@ input[type=search].field::-webkit-search-decoration { -webkit-appearance: none; 
 .scrim { position: fixed; inset: 0; z-index: 20; background: var(--scrim); display: flex; align-items: flex-end; justify-content: center; animation: fadein .3s ease; }
 .sheet {
   position: relative; background: var(--bg); width: 100%; max-width: 720px; max-height: 94vh; max-height: 94dvh; overflow-y: auto; overscroll-behavior: contain; border-radius: 12px 12px 0 0;
-  padding: 22px max(16px, env(safe-area-inset-right, 0px)) calc(24px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  padding: 22px max(16px, var(--safe-area-inset-right, env(safe-area-inset-right, 0px))) calc(24px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) max(16px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
   animation: sheetup .5s var(--ease-ios);
 }
 .scrim.still, .scrim.still .sheet { animation: none; }
@@ -392,9 +394,9 @@ form.edit .field { color: var(--ink); font-weight: 400; }
 .camera video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .cam-frame { position: absolute; left: 50%; top: 46%; width: min(72vw, 52vh * 63 / 88); aspect-ratio: 63/88; transform: translate(-50%, -50%); border-radius: 16px; box-shadow: 0 0 0 9999px rgba(0,0,0,.5); border: 2px solid rgba(255,255,255,.85); transition: border-color .2s; }
 .cam-frame span { display: none; }
-.cam-top { position: absolute; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: calc(env(safe-area-inset-top, 0px) + 12px) max(16px, env(safe-area-inset-right, 0px)) 12px max(16px, env(safe-area-inset-left, 0px)); font-size: calc(15rem / 17); font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.cam-top { position: absolute; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: calc(var(--safe-area-inset-top, env(safe-area-inset-top, 0px)) + 12px) max(16px, var(--safe-area-inset-right, env(safe-area-inset-right, 0px))) 12px max(16px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px))); font-size: calc(15rem / 17); font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
 .cam-top .x { background: rgba(255,255,255,.18); color: #fff; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); width: 34px; height: 34px; }
-.cam-bottom { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 20px 16px calc(env(safe-area-inset-bottom, 0px) + 28px); }
+.cam-bottom { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 20px 16px calc(var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)) + 28px); }
 .shutter { width: 74px; height: 74px; border-radius: 50%; border: 0; background: #fff; cursor: pointer; box-shadow: 0 0 0 4px #000, 0 0 0 7px #fff; transition: transform .12s; }
 .shutter:active { transform: scale(.9); }
 .cam-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
@@ -409,7 +411,7 @@ form.edit .field { color: var(--ink); font-weight: 400; }
 .cam-price b { display: block; font-weight: 700; }
 .cam-price small { display: block; font-family: var(--f-body); font-size: calc(12rem / 17); font-weight: 600; margin-top: 1px; }
 .cam-price.dup { background: #FF453A; color: #fff; }
-.cam-feed { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top, 0px) + 62px); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 16px; pointer-events: none; }
+.cam-feed { position: absolute; left: 0; right: 0; top: calc(var(--safe-area-inset-top, env(safe-area-inset-top, 0px)) + 62px); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 16px; pointer-events: none; }
 .cam-item { display: flex; gap: 10px; align-items: center; max-width: min(92vw, 420px); background: rgba(30,30,30,.7); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border-radius: 12px; padding: 7px 12px; font-size: calc(15rem / 17); transition: opacity .4s; }
 .cam-item .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .cam-item .p { font-weight: 600; color: #fff; white-space: nowrap; font-variant-numeric: tabular-nums; }

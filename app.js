@@ -61,15 +61,21 @@
     document.documentElement.classList.add("native");
     const vp = document.querySelector('meta[name="viewport"]'); if (vp) vp.setAttribute("content", "width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover");
   }
-  const RELEASE_PAGE = "https://github.com/Frozz3/pokemon-kartenscanner/releases/tag/ios-latest";
-  const app = { build: 0, update: 0 };
+  // iOS or Android; each instance (fork) publishes its builds as releases "ios-latest" / "android-latest"
+  // in its own GitHub repository, which version.json names (written at build time).
+  const PLATFORM = NATIVE && typeof Cap.getPlatform === "function" ? Cap.getPlatform() : "web";
+  const ANDROID = PLATFORM === "android";
+  const APP_LABEL = ANDROID ? "Android-App" : "iOS-App";
+  const app = { build: 0, update: 0, repo: "" };
+  const releasePage = () => app.repo ? `https://github.com/${app.repo}/releases/tag/${PLATFORM}-latest` : "";
   async function checkAppUpdate() {
     if (!NATIVE) return;
-    try { app.build = Number((await (await fetch("version.json", { cache: "no-store" })).json()).build) || 0; } catch (_) {}
+    try { const v = await (await fetch("version.json", { cache: "no-store" })).json(); app.build = Number(v.build) || 0; app.repo = /^[\w.-]+\/[\w.-]+$/.test(v.repo || "") ? v.repo : ""; } catch (_) {}
+    if (!app.repo) return;
     let last = 0, known = 0; try { last = Number(localStorage.getItem("ks-updchk") || 0); known = Number(localStorage.getItem("ks-updbuild") || 0); } catch (_) {}
     if (Date.now() - last > 6 * 3600e3) {
       try {
-        const r = await fetch("https://api.github.com/repos/Frozz3/pokemon-kartenscanner/releases/tags/ios-latest", { headers: { accept: "application/vnd.github+json" } });
+        const r = await fetch(`https://api.github.com/repos/${app.repo}/releases/tags/${PLATFORM}-latest`, { headers: { accept: "application/vnd.github+json" } });
         if (r.ok) { const m = /Build\s+(\d+)/i.exec((await r.json()).name || ""); known = m ? Number(m[1]) : 0; }
         localStorage.setItem("ks-updchk", String(Date.now())); localStorage.setItem("ks-updbuild", String(known));
       } catch (_) {}
@@ -1788,7 +1794,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         ${fact("Datenbank", esc(host))}${fact("Letzter Abgleich", state.lastSync ? esc(ago(state.lastSync)) : "–")}
         ${fact("Karten · Sessions · Scans", `${nfmt(cards.length)} · ${nfmt(state.sessions.length)} · ${nfmt(state.items.length)}`)}
         ${fact("Verlaufspunkte", nfmt(state.history.length))}${fact("Erkennungsmodell", esc(settings.model))}
-        ${fact("App", NATIVE ? `iOS-App, Build ${esc(app.build || "–")}` : "Web-App")}
+        ${fact("App", NATIVE ? `${APP_LABEL}, Build ${esc(app.build || "–")}` : "Web-App")}
+        ${fact("Updates aus", esc(app.repo || "–"))}
         ${fact("Profil-Funktionen", state.me && state.me.missing ? '<span class="bad-txt">fehlen, schema.sql ausführen</span>' : "ok")}</dl></section>`;
   }
   function adminCare(s) {
@@ -1911,7 +1918,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const dev = /iPhone|iPad/.test(ua) ? (ios ? `iOS ${ios[1]}.${ios[2]}` : "iOS") : /Android/.test(ua) ? "Android" : "Computer";
     const standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone;
     s.diag = [
-      ["App", NATIVE ? `iOS-App, Build ${app.build || "–"}` : standalone ? "Web-App vom Home-Bildschirm" : "Web-App im Browser"],
+      ["App", NATIVE ? `${APP_LABEL}, Build ${app.build || "–"}` : standalone ? "Web-App vom Home-Bildschirm" : "Web-App im Browser"],
       ["Gerät", dev], ["Online", navigator.onLine ? "ja" : "nein"], ["Speicher", store], ["Darstellung", isDark() ? "dunkel" : "hell"],
       ["Kamera", navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? "verfügbar" : "nicht verfügbar"],
       ["Schlüssel", settings.apiKey ? "eingerichtet" : "fehlt"], ["Einträge im Fehlerprotokoll", String(readErrLog().length)],
@@ -2299,7 +2306,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <p class="gf">Deine Sammlung ist in deinem Konto gespeichert. Ein Backup ist eine zusätzliche Kopie als Datei.</p></section>
         ${NATIVE ? `<section><h3 class="gh">App</h3>
           <div class="group"><div class="cell"><span>Version</span><span class="val">${app.build ? `Build ${app.build}` : "–"}</span></div>${app.update ? link("app-update", "Update laden", `Build ${app.update}`) : ""}</div>
-          <p class="gf">${app.update ? "Eine neue Version ist da. Lade sie herunter und spiel sie über die alte App; deine Daten bleiben erhalten." : "Du hast die aktuelle Version."}</p></section>` : ""}
+          <p class="gf">${app.update ? (ANDROID ? "Eine neue Version ist da. Lade die APK herunter und installiere sie über die alte App; deine Daten bleiben erhalten." : "Eine neue Version ist da. Lade sie herunter und spiel sie mit Sideloadly über die alte App; deine Daten bleiben erhalten.") : "Du hast die aktuelle Version."}</p></section>` : ""}
         ${isAdmin() ? `<section><h3 class="gh">Admin</h3><div class="group">${link("admin", "Admin-Bereich")}</div></section>` : ""}
         <div class="group"><button class="cell action danger center" type="button" data-act="logout">Abmelden</button></div>
         <p class="fine legal">Preise: Cardmarket über <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a>. Pokémon ist eine Marke von Nintendo, Creatures und GAME FREAK. Privates Fanprojekt.</p>
@@ -2517,7 +2524,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "set-tech": haptic("light"); settings.tech = !settings.tech; el.setAttribute("aria-checked", String(settings.tech)); render(); break;
       case "set-auto": haptic("light"); settings.auto = !settings.auto; el.setAttribute("aria-checked", String(settings.auto)); break;
       case "set-sound": haptic("light"); settings.sound = !settings.sound; el.setAttribute("aria-checked", String(settings.sound)); if (settings.sound) { audioUnlock(); cashSound(false); } break;
-      case "app-update": window.open(RELEASE_PAGE, "_blank"); break;
+      case "app-update": if (releasePage()) window.open(releasePage(), "_blank"); break;
       case "key-del": settings.apiKey = ""; toast("Schlüssel entfernt."); if (state.sheet) { state.sheet.edit = false; renderSheet(); } render(); break;
       case "export": exportData(); break;
       case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
@@ -2751,6 +2758,15 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   if (NATIVE) {
     requestAnimationFrame(() => requestAnimationFrame(() => { const sp = plug("SplashScreen"); if (sp) try { quiet(sp.hide({ fadeOutDuration: 0 })); } catch (_) {} }));
     setTimeout(checkAppUpdate, 2500);
+    const appPlugin = plug("App");
+    if (ANDROID && appPlugin) try {
+      quiet(appPlugin.addListener("backButton", () => {
+        if (camOpen()) { closeCamera(); return; }
+        if (state.sheet) { closeSheet(); render(); return; }
+        if (state.user && state.tab !== "scan") { state.tab = "scan"; render(); window.scrollTo(0, 0); updateBar(); return; }
+        quiet(appPlugin.minimizeApp());
+      }));
+    } catch (_) {}
   }
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 })();
