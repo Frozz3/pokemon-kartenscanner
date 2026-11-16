@@ -235,7 +235,7 @@
 
   const state = {
     cards: [], sessions: [], items: [], open: null, loaded: false, problem: null,
-    running: new Set(), stage: new Map(), tab: "scan", search: "", sort: settings.sort,
+    running: new Set(), stage: new Map(), tab: "inv", search: "", sort: settings.sort,
     sheet: null, imgCache: new Map(), busy: false, refreshing: null, test: null, marketDown: null,
     user: null, authReady: false, recovery: false, setupOpen: false, authBusy: false, authMsg: null, authErr: null, authEmail: "",
     legacy: null, migrating: null, lastSync: 0,
@@ -1274,7 +1274,10 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   const imgTag = (src, alt) => src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy">` : "";
   const thumbOf = (thumb, card) => thumb || officialImg(card, "low");
 
-  const TAB_TITLES = { scan: "Scannen", inv: "Inventar", sets: "Sets", value: "Wert", hist: "Verlauf" };
+  const TAB_TITLES = { scan: "Scannen", inv: "Sammlung", sets: "Sammlung", value: "Wert", hist: "Verlauf" };
+  // Three places in the tab bar; two of them hold a pair of views switched at the top of the page.
+  const TAB_GROUP = { sets: "inv", hist: "value" };
+  const SUBNAV = { inv: [["inv", "Karten"], ["sets", "Sets"]], value: [["value", "Wert"], ["hist", "Verlauf"]] };
   let shownTab = null;
   const calm = () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   // Launch screen: stays until the first real content is on screen (at least briefly, so it doesn't flicker).
@@ -1292,8 +1295,17 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     $("#brand").hidden = !authed;
     $("#pageTitle").textContent = $("#miniTitle").textContent = authed ? (TAB_TITLES[state.tab] || "Kartenscanner") : "";
     if (state.problem || (state.authReady && (!state.user || state.loaded))) hideSplash();
+    if (!authed) $("#subnav").hidden = true;
     if (!authed) { ["#view-scan", "#view-inv", "#view-sets", "#view-value", "#view-hist"].forEach(q => { $(q).hidden = true; }); renderAuth(); return; }
-    document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === state.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
+    const group = TAB_GROUP[state.tab] || state.tab;
+    document.querySelectorAll(".nav button").forEach(b => { if (b.dataset.tab === group) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
+    const sub = $("#subnav"), pair = SUBNAV[group];
+    sub.hidden = !pair;
+    const subKey = pair ? state.tab : "";
+    if (sub.dataset.key !== subKey) { // rebuilt only on a change, so the focus stays on the pressed button
+      sub.dataset.key = subKey;
+      sub.innerHTML = pair ? pair.map(([k, l]) => `<button type="button" data-tab="${k}" aria-pressed="${state.tab === k}">${l}</button>`).join("") : "";
+    }
     const openDot = state.open && state.tab !== "scan";
     $("#navDot").innerHTML = openDot ? '<span class="dot" title="Offene Session"></span>' : "";
     // VoiceOver doesn't read the dot's title, so the tab itself says it.

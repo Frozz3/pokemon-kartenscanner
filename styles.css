@@ -308,7 +308,7 @@ input[type=search].field::-webkit-search-decoration { -webkit-appearance: none; 
   box-shadow: 0 -.5px 0 var(--line);
   padding: 4px max(8px, var(--safe-area-inset-right, env(safe-area-inset-right, 0px))) calc(2px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) max(8px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
 }
-.nav .in { max-width: 720px; margin: 0 auto; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
+.nav .in { max-width: 720px; margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; align-items: end; }
 .nav button { border: 0; background: transparent; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0 2px; color: var(--tab-off); font-size: 11px; font-weight: 500; min-width: 0; cursor: pointer; letter-spacing: .01em; }
 .nav button svg { width: 26px; height: 26px; stroke-width: 1.8; transition: transform .4s var(--spring); }
 .nav button:active svg { transform: scale(.86); transition: transform .1s; }
@@ -509,3 +509,14 @@ pre.raw { max-height: 260px; overflow: auto; margin: 0; background: var(--fill-2
 .inv-more { text-align: center; padding: 14px 0 4px; }
 .sheet:focus { outline: none; } /* the sheet itself only receives the focus as a starting point */
 .row > :last-child { min-width: 0; overflow-wrap: anywhere; } /* large text: the price may wrap instead of pushing the row wider */
+
+/* Tab bar: collection, a raised scan button in the middle, value. */
+.nav .nav-scan { color: var(--ink); font-weight: 600; }
+.nav-fab { width: 62px; height: 62px; margin-top: -30px; border-radius: 50%; background: var(--primary); color: var(--on-primary); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 4px var(--bg), 0 6px 16px rgba(20,22,43,.18); transition: transform .4s var(--spring); }
+.nav .nav-scan svg { width: 30px; height: 30px; stroke-width: 2; }
+.nav .nav-scan:active .nav-fab { transform: scale(.92); transition: transform .1s; }
+.nav .nav-scan:active svg { transform: none; }
+.nav .nav-scan[aria-current="page"] .nav-fab { box-shadow: 0 0 0 4px var(--bg), 0 0 0 6px var(--ink); }
+/* Switch between the two views of a tab (Karten / Sets, Wert / Verlauf). */
+.subnav { grid-template-columns: repeat(2, 1fr); margin: 0 0 14px; }
+.subnav button { min-height: 44px; font-size: calc(15rem / 17); }

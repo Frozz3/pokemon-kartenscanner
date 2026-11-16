@@ -58,8 +58,10 @@
   </header>
   <div class="brand" id="brand" role="region" aria-labelledby="pageTitle">
     <h1 id="pageTitle">Kartenscanner</h1>
-    <div class="subtitle" id="subtitle" hidden>Sammlung <b id="worth">–</b></div>
+    <div class="subtitle" id="subtitle" hidden>Gesamtwert <b id="worth">–</b></div>
   </div>
+
+  <nav class="seg subnav" id="subnav" aria-label="Ansicht" hidden></nav>
 
   <main id="view-auth" class="stack"></main>
 
@@ -89,25 +91,17 @@
 
 <nav class="nav" id="nav" aria-label="Bereiche" hidden>
   <div class="in">
-    <button type="button" data-tab="scan" aria-current="page">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8.5" y="7" width="7" height="10" rx="1"/></svg>
-      <span>Scannen<span id="navDot"></span></span>
-    </button>
-    <button type="button" data-tab="inv">
+    <button type="button" data-tab="inv" aria-current="page">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7" height="9" rx="1"/><rect x="14" y="4" width="7" height="9" rx="1"/><path d="M3 17h18M3 21h18"/></svg>
-      <span>Inventar</span>
+      <span>Sammlung</span>
     </button>
-    <button type="button" data-tab="sets">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="3" width="11" height="15" rx="1.5"/><path d="M4 7v12.5A1.5 1.5 0 0 0 5.5 21H15"/><path d="M10 14l2 2 4-5"/></svg>
-      <span>Sets</span>
+    <button type="button" data-tab="scan" class="nav-scan">
+      <span class="nav-fab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8.5" y="7" width="7" height="10" rx="1"/></svg></span>
+      <span>Scannen<span id="navDot"></span></span>
     </button>
     <button type="button" data-tab="value">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 6-7"/><path d="M16 7h4v4"/></svg>
-      <span>Wert</span>
-    </button>
-    <button type="button" data-tab="hist">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>
-      <span>Verlauf</span>
+      <span>Wert &amp; Verlauf</span>
     </button>
   </div>
 </nav>
