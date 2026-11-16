@@ -471,13 +471,7 @@ button.cell:active, .cell.link:active { background: var(--fill); transition: non
 html.native { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 html.native input, html.native textarea, html.native .sqlbox { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 
-/* Admin area */
-.seg.seg4 { grid-template-columns: repeat(4, 1fr); }
-.admin .stats2 .stat .v { font-size: calc(20rem / 17); }
-.urow { width: 100%; display: grid; grid-template-columns: 40px minmax(0,1fr) auto; gap: 12px; align-items: center; background: var(--surface); border: 0; padding: 10px 16px; text-align: left; color: var(--ink); cursor: pointer; }
-.urow:active { background: var(--fill); }
-.ulist > li + li::before { left: 68px; }
-.avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--primary); color: var(--on-primary); font-weight: 600; font-size: 17px; display: flex; align-items: center; justify-content: center; }
+/* Werkzeuge (tests, technical details, maintenance) */
 .badge { display: inline-block; font-size: calc(11rem / 17); font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--fill); color: var(--muted); vertical-align: 2px; }
 .badge.bad { color: var(--bad); background: color-mix(in srgb, var(--bad-fill) 14%, transparent); }
 .back { align-self: flex-start; padding-left: 0; min-height: 32px; }
@@ -487,7 +481,6 @@ pre.raw { max-height: 260px; overflow: auto; margin: 0; background: var(--fill-2
 .logmsg { font: calc(13rem / 17)/1.35 ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
 .admin .facts dt, .admin .facts dd { font-size: calc(15rem / 17); padding-top: 9px; padding-bottom: 9px; }
 .group.pad.stack { display: flex; }
-.urow .sub { white-space: normal; }
 
 /* Links inside small print stay recognisable now that the tint is navy */
 .gf a, .fine a, .steps a, .settings .legal a { text-decoration: underline; text-underline-offset: 2px; }

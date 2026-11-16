@@ -1,6 +1,6 @@
 # Pokémon Kartenscanner
 
-App für iPhone und Android: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardmarket-Preisen bewerten und in einem Inventar sammeln. Jeder kann sich eine **eigene Instanz** mit eigenem Server und eigener App bauen, ohne Code zu ändern (siehe [Eigene Instanz](#eigene-instanz-selbst-hosten)).
+App für iPhone und Android: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardmarket-Preisen bewerten und in einem Inventar sammeln. Jede App gehört **einer Person**: ein Konto, einmal anmelden, danach bleibt man angemeldet. Wer sie auch nutzen will, baut sich eine **eigene Instanz** mit eigenem Server und eigener App bauen, ohne Code zu ändern (siehe [Eigene Instanz](#eigene-instanz-selbst-hosten)).
 
 ## Funktionen
 
@@ -13,10 +13,10 @@ App für iPhone und Android: Pokémon-Karten mit der Kamera scannen, mit aktuell
 - **Wertentwicklung:** Täglicher Schnappschuss des Sammlungswerts, automatische Preisaktualisierung einmal am Tag, Kurve, Veränderung über 7 und 30 Tage, Gewinner und Verlierer, Preisverlauf je Karte.
 - **Set-Fortschritt:** Pro Set „47/189“ mit Fortschrittsbalken, deutsche Set- und Kartennamen mit deutschen Kartenbildern (englischer Fallback), Sets sortierbar nach Fortschritt, Wert, fehlenden Karten, Name oder Erscheinungsjahr. In der Set-Ansicht Karten nach Preis oder Nummer sortieren und nach Preisspanne filtern, mit Summe der Auswahl und Kosten zum Vervollständigen.
 - **Verlauf** aller abgeschlossenen Sessions.
-- **Für alle nutzbar:** Jeder kann sich selbst registrieren (Name optional), bekommt eine kurze Begrüßung und eine Schritt-für-Schritt-Hilfe für den eigenen Erkennungs-Schlüssel (wird vor dem Speichern geprüft und gilt nur für das eigene Konto). Die Oberfläche zeigt nur, was man zum Sammeln braucht; Technik-Angaben gibt es nur im Admin-Bereich.
-- **Admin-Bereich** (nur für Admins, unter Einstellungen): **Nutzer** (Konten mit Karten, Sammlungswert, Scans und KI-Verbrauch; vorläufiges Passwort setzen, sperren, löschen), **Tests** (Verbindungstest, Test-Scan mit KI-Rohantwort, Preis-Abfrage, Diagnose), **Technik** (Schalter für Technik-Details in der ganzen App, Preis- und Datenstatus), **Wartung** (alle Preise neu laden, Zwischenspeicher leeren, Backup, Fehlerprotokoll).
+- **Ein Konto pro App:** Beim allerersten Start richtet man das Konto ein, danach lehnt der Server jedes weitere ab. Auf jedem Gerät meldet man sich einmal an und bleibt angemeldet, bis man selbst „Abmelden“ tippt. Eine kurze Begrüßung und eine Schritt-für-Schritt-Hilfe für den Erkennungs-Schlüssel (wird vor dem Speichern geprüft) führen durch den Start.
+- **Werkzeuge** (Einstellungen → Werkzeuge): **Tests** (Verbindungstest, Test-Scan mit KI-Rohantwort, Preis-Abfrage, Diagnose), **Technik** (Schalter für Technik-Details in der ganzen App, Preis- und Datenstatus), **Wartung** (alle Preise neu laden, Zwischenspeicher leeren, Backup, Sammlung eines früheren Kontos übernehmen, Fehlerprotokoll). Es gibt keine Nutzerverwaltung und keine Verbrauchszählung auf dem Server.
 - **Konto mit Login:** E-Mail und Passwort, Daten und Fotos dauerhaft in Supabase gespeichert und auf jedem Gerät verfügbar. **E-Mail und Passwort werden auf dem Gerät gehasht** (PBKDF2-SHA-256); in der Datenbank steht nur `e-<hash>@kartenscanner.invalid`, und Supabase speichert den Passwort-Hash zusätzlich mit bcrypt. Das echte Passwort verlässt nie das Gerät. Ältere Logins (Benutzername, unverhashtes Passwort) funktionieren weiter und werden beim Anmelden automatisch umgestellt. Daten aus der alten Version ohne Konto lassen sich beim ersten Login übernehmen.
-- **Automatische Abmeldung** beim Schließen der App (abschaltbar) und nach einstellbarer Zeit ohne Aktivität (5 Min. bis 1 Std., Standard 15 Min.), mit Warnung 30 Sekunden vorher; nicht während Scans oder Preisaktualisierungen.
+- **Angemeldet bleiben:** Kein automatisches Abmelden beim Schließen oder nach Inaktivität. Supabase erneuert die Anmeldung im Hintergrund.
 - **Sicherungsdatei:** Export und Import als JSON-Datei (ohne Fotos).
 - **Design im iOS-Stil** mit Systemschrift, großen Titeln, die beim Scrollen in die Leiste wandern, gruppierten Listen und Einstellungen wie in der Einstellungen-App (mit Schaltern für Auto-Auslöser und Ton); **Hell oder dunkel automatisch wie das System**, ohne eigenen Schalter in der App (so empfiehlt es Apple).
 - **Bewegung wie auf dem iPhone:** Fenster gleiten von unten herein und lassen sich nach unten wegwischen, Knöpfe federn beim Tippen, Seitenwechsel blenden weich über. Am Ende einer Session zählt der Endbetrag hoch, landet mit Kassen-Sound und einem Münzregen. Eigener Startbildschirm (hell und dunkel) für alle aktuellen iPhones. Wer in iOS „Bewegung reduzieren“ eingeschaltet hat, bekommt keine Animationen.
@@ -29,7 +29,7 @@ GitHub baut die Android-App bei jeder Änderung automatisch (Workflow `.github/w
 
 1. Den Link auf dem Android-Handy öffnen und die Datei herunterladen.
 2. Datei öffnen. Android fragt beim ersten Mal, ob der Browser Apps installieren darf: **Einstellungen → Diese Quelle zulassen**, dann zurück und **Installieren**.
-3. App öffnen, registrieren oder anmelden, Erkennung einrichten.
+3. App öffnen, einmal anmelden (bei einer neuen Instanz: Konto einrichten), Erkennung einrichten.
 
 Updates: neue APK genauso herunterladen und über die alte App installieren; die Daten bleiben erhalten. Die App meldet unter Einstellungen → App, wenn eine neue Version bereitliegt. Die Zurück-Taste schließt zuerst offene Fenster und die Kamera, dann geht sie zum Scannen-Tab.
 
@@ -47,7 +47,7 @@ Installation mit dem Windows-PC und einer kostenlosen Apple-ID:
 3. In Sideloadly die `Kartenscanner.ipa` hineinziehen, deine Apple-ID eintragen, **Start** klicken und das Apple-ID-Passwort eingeben.
 4. Auf dem iPhone: **Einstellungen → Datenschutz & Sicherheit → Entwicklermodus** einschalten (Neustart, dann bestätigen).
 5. **Einstellungen → Allgemein → VPN & Geräteverwaltung** → deine Apple-ID → **Vertrauen**.
-6. App öffnen, anmelden, API-Schlüssel eintragen. Die Daten kommen wie gewohnt aus deinem Konto.
+6. App öffnen, einmal anmelden, API-Schlüssel eintragen. Die Daten kommen wie gewohnt aus deinem Konto.
 
 Wichtig bei einer kostenlosen Apple-ID:
 
@@ -66,7 +66,7 @@ Der Schlüssel wird **nur auf dem Gerät** gespeichert (localStorage) und direkt
 
 ## Daten und Login (Supabase)
 
-Inventar, Sessions und Fotos liegen in einem eigenen, kostenlosen [Supabase](https://supabase.com)-Projekt. Jeder sieht nur seine eigenen Daten (Row Level Security). Statt deiner E-Mail-Adresse steht in der Login-Verwaltung nur ein Hash. Das ist eine Pseudonymisierung: Wer Zugriff auf die Datenbank hat und deine E-Mail-Adresse bereits kennt, könnte prüfen, ob sie dazu passt; aus dem Hash zurückrechnen lässt sie sich nicht.
+Inventar, Sessions und Fotos liegen in einem eigenen, kostenlosen [Supabase](https://supabase.com)-Projekt. Nur das angemeldete Konto kommt an die Daten (Row Level Security). Statt deiner E-Mail-Adresse steht in der Login-Verwaltung nur ein Hash. Das ist eine Pseudonymisierung: Wer Zugriff auf die Datenbank hat und deine E-Mail-Adresse bereits kennt, könnte prüfen, ob sie dazu passt; aus dem Hash zurückrechnen lässt sie sich nicht.
 
 Einrichtung:
 
@@ -74,16 +74,18 @@ Einrichtung:
 2. **SQL Editor** → Inhalt von [`supabase/schema.sql`](supabase/schema.sql) einfügen → **Run**.
 3. **Project Settings → API:** Project URL und den `anon`/`publishable` Key notieren. Für die Apps kommen sie als GitHub-Variablen in den Build (siehe [Eigene Instanz](#eigene-instanz-selbst-hosten)); `config.js` gilt nur für die Web-Version dieses Repos. Den `service_role`/`secret` Key niemals verwenden, der Build lehnt ihn ab.
 4. **Authentication → Sign In / Providers → „Confirm email“ ausschalten** (Supabase kennt nur den Hash, eine Bestätigungs-Mail käme nie an).
-5. **„Allow new users to sign up“ eingeschaltet lassen**, damit sich andere selbst registrieren können. (Soll die App privat bleiben: ausschalten.)
-6. In der App registrieren. **Das älteste Konto wird automatisch Admin** (beim Ausführen von `schema.sql`, solange es noch keinen Admin gibt). Prüfen mit `select * from public.admins;`, weitere Admins mit `insert into public.admins (user_id) values ('<Konto-ID aus Authentication → Users>');`.
+5. **„Allow new users to sign up“ eingeschaltet lassen**, bis das Konto angelegt ist. Danach ist es egal: `schema.sql` sorgt dafür, dass der Server nur ein einziges Konto annimmt.
+6. Die App öffnen: Solange es noch kein Konto gibt, zeigt sie **„Konto einrichten“**. E-Mail und Passwort festlegen, fertig.
 
-**Schon eingerichtet?** Nach Updates den Inhalt von `schema.sql` einfach noch einmal im SQL Editor ausführen. Das ist gefahrlos, vorhandene Daten bleiben erhalten; es ergänzt Profile, Sperren, Verbrauchszähler, Admin-Funktionen und den Zeitstempel-Trigger für den schnellen Abgleich.
+**Schon eingerichtet?** Nach Updates den Inhalt von `schema.sql` einfach noch einmal im SQL Editor ausführen. Das ist gefahrlos, vorhandene Daten bleiben erhalten; es ergänzt Profil, die Sperre für weitere Konten und den Zeitstempel-Trigger für den schnellen Abgleich und entfernt die frühere Nutzerverwaltung samt Verbrauchszähler.
+
+**Von mehreren Konten auf eines umsteigen:** `schema.sql` ausführen, dann unter **Authentication → Users** alle Konten außer deinem löschen (ihre Karten verschwinden mit; ihre Fotos danach unter **Storage → card-images** im Ordner mit der Konto-ID löschen). Neue Konten lehnt der Server ab diesem Moment ab.
 
 Hinweis: Supabase pausiert kostenlose Projekte nach etwa einer Woche ohne Nutzung. Ein Klick auf „Restore“ im Dashboard holt das Projekt mit allen Daten zurück.
 
 ## Eigene Instanz (selbst hosten)
 
-Jeder kann den Kartenscanner mit **eigenem Server** und **eigener App** betreiben, zum Beispiel für Familie, Freunde oder einen Verein. Die Daten liegen dann im eigenen Supabase-Projekt, das Original-Projekt hat damit nichts mehr zu tun. Am Code muss nichts geändert werden.
+Jeder kann den Kartenscanner mit **eigenem Server** und **eigener App** betreiben. Jede Instanz ist für eine Person gedacht; die Daten liegen dann im eigenen Supabase-Projekt, das Original-Projekt hat damit nichts mehr zu tun. Am Code muss nichts geändert werden.
 
 **1. Repository kopieren**
 - Auf GitHub oben rechts **Fork**.
@@ -91,7 +93,7 @@ Jeder kann den Kartenscanner mit **eigenem Server** und **eigener App** betreibe
 
 **2. Server einrichten**
 - Ein Supabase-Projekt anlegen, entweder kostenlos auf supabase.com oder selbst betrieben ([Supabase self-hosting](https://supabase.com/docs/guides/self-hosting)). Die Adresse muss mit `https://` erreichbar sein.
-- Schritte 2, 4 und 5 aus [Daten und Login](#daten-und-login-supabase) ausführen: `schema.sql` laufen lassen, „Confirm email“ aus, Registrierung nach Wunsch an oder aus.
+- Schritte 2, 4 und 5 aus [Daten und Login](#daten-und-login-supabase) ausführen: `schema.sql` laufen lassen, „Confirm email“ aus, „Allow new users to sign up“ an.
 
 **3. Den Fork mit dem Server verbinden:** Im Fork unter **Settings → Secrets and variables → Actions → Variables → New repository variable**:
 
@@ -131,7 +133,7 @@ Ohne diese Secrets baut GitHub trotzdem eine APK, aber mit einer wechselnden Tes
 `https://github.com/<dein-name>/<dein-repo>/releases/download/android-latest/Kartenscanner.apk` und `…/ios-latest/Kartenscanner.ipa`.
 Danach baut GitHub bei jeder Änderung im Fork automatisch neu. Die Apps fragen für Update-Hinweise genau diesen Fork.
 
-**6. Admin werden:** In der eigenen App als Erste oder Erster registrieren und `schema.sql` danach noch einmal ausführen. Das älteste Konto wird Admin, solange es noch keinen gibt.
+**6. Konto einrichten:** Die eigene App öffnen und unter **„Konto einrichten“** E-Mail und Passwort festlegen. Danach nimmt der Server keine weiteren Konten an.
 
 **Updates vom Original übernehmen:** Im Fork auf **Sync fork → Update branch**. GitHub baut die Apps dann neu. Wenn sich `supabase/schema.sql` geändert hat, die Datei noch einmal im SQL Editor ausführen.
 
@@ -141,14 +143,12 @@ In der App: Einstellungen → Konto → **E-Mail-Anmeldung einrichten**. Die App
 
 ### Passwort vergessen
 
-Ohne gespeicherte E-Mail-Adresse gibt es keinen Reset-Link. Für andere Nutzer: Admin-Bereich → Nutzer → Konto → **Vorläufiges Passwort setzen** und der Person sagen; sie ändert es danach unter Einstellungen → Passwort ändern.
-
-Für dein eigenes Admin-Konto im SQL Editor ein vorläufiges Passwort setzen; die App akzeptiert es beim nächsten Login und stellt es sofort auf den Hash um:
+Ohne gespeicherte E-Mail-Adresse gibt es keinen Reset-Link. Stattdessen im SQL Editor ein vorläufiges Passwort setzen; die App akzeptiert es beim nächsten Login und stellt es sofort auf den Hash um:
 
 ```sql
 update auth.users
    set encrypted_password = extensions.crypt('VORLAEUFIGES_PASSWORT', extensions.gen_salt('bf'))
- where email like 'e-%@kartenscanner.invalid';   -- bei mehreren Konten die genaue Kennung aus Authentication → Users nehmen
+ where email like 'e-%@kartenscanner.invalid';
 ```
 
 Danach in der App unter Einstellungen → **Passwort ändern** ein neues Passwort festlegen.
@@ -158,8 +158,8 @@ Danach in der App unter Einstellungen → **Passwort ändern** ein neues Passwor
 - Im Repository stehen keine Geheimnisse, nur der öffentliche Supabase-Schlüssel. Deine Daten schützt die Row Level Security; der Anthropic-Schlüssel bleibt auf dem Gerät und gilt nur für das Konto, mit dem er eingetragen wurde.
 - **Content Security Policy** (in `index.html`): Die App lädt nur eigene Dateien und spricht nur mit Supabase, TCGdex, Anthropic und GitHub (Update-Prüfung). Eingeschleuster Code und Anfragen an fremde Server werden blockiert. Inline-Skripte sind komplett verboten.
 - Der App-Build nutzt nur GitHubs eigene Actions, fest auf geprüfte Versionen (Commit) gepinnt.
-- Jedes Konto sieht nur seine eigenen Daten (Row Level Security). Gesperrte Konten kommen an nichts mehr heran. Die App zeigt Admins von anderen nur Zahlen (Kartenanzahl, Wert, Scans), keine Karten oder Fotos. Technisch dürfen Admins aber die Fotos aller Konten lesen und löschen (nötig zum Wiederherstellen und Entfernen eines Kontos). Alle Admin-Funktionen prüfen die Rechte auf dem Server.
-- Offene Registrierung: Supabase begrenzt Anmeldeversuche pro IP. Wer einen Spam-Schutz will, kann unter Authentication → Attack Protection ein CAPTCHA aktivieren (braucht dann eine kleine Anpassung in der App).
+- Nur das eine Konto kommt an Karten und Fotos (Row Level Security). Weitere Konten lehnt die Datenbank selbst ab (Trigger `only_one_account`), auch wenn jemand die App umgeht. Von außen ist nur eine Ja/Nein-Abfrage möglich, ob schon ein Konto existiert (`setup_open`).
+- Angemeldet bleiben heißt: Wer dein entsperrtes Handy hat, sieht deine Sammlung. Für mehr Schutz die Bildschirmsperre des Handys nutzen oder in der App „Abmelden“ tippen.
 - Für Sideloadly/SideStore am besten eine zweite Apple-ID nehmen, nicht die Haupt-ID.
 - Der Android-Signaturschlüssel liegt nur als verschlüsseltes GitHub-Secret vor, wird im Build nur kurz in eine temporäre Datei geschrieben und danach gelöscht. Der Build bricht ab, wenn als `SUPABASE_KEY` ein geheimer Schlüssel eingetragen ist.
 

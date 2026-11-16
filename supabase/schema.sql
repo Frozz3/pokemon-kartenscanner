@@ -1,6 +1,6 @@
--- Pokémon Kartenscanner: Datenbank, Bildspeicher, Nutzerverwaltung
+-- Pokémon Kartenscanner: Datenbank und Bildspeicher für EIN Konto (die App gehört einer Person)
 -- Im Supabase-Dashboard unter "SQL Editor" einfügen und einmal ausführen ("Run").
--- Das Skript kann gefahrlos mehrfach ausgeführt werden; vorhandene Daten bleiben erhalten.
+-- Das Skript kann gefahrlos mehrfach ausgeführt werden; die Sammlung bleibt erhalten.
 
 -- ========== Tabellen ==========
 -- Jede Zeile gehört genau einem Konto (user_id), der Inhalt liegt als JSON in "data".
@@ -49,8 +49,7 @@ create index if not exists cards_user_idx on public.cards (user_id);
 create index if not exists sessions_user_idx on public.sessions (user_id);
 create index if not exists items_user_idx on public.items (user_id);
 
--- Profil je Konto: Anzeigename, Sperre, zuletzt aktiv. Nutzer lesen nur ihr eigenes Profil;
--- geschrieben wird ausschließlich über die Funktionen unten (eine Sperre kann sich niemand selbst aufheben).
+-- Profil des Kontos: Anzeigename. Geschrieben wird nur über die Funktion me() unten.
 create table if not exists public.profiles (
   user_id uuid primary key references auth.users (id) on delete cascade,
   name text,
@@ -58,19 +57,18 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now(),
   last_seen timestamptz
 );
--- Wer den Admin-Bereich sieht. Kein Zugriff aus der App, nur über die Funktionen unten.
+-- Besitzer der App: darf ältere Foto-Ordner lesen (Werkzeuge → Wartung → Sammlung übernehmen).
 create table if not exists public.admins (
   user_id uuid primary key references auth.users (id) on delete cascade
 );
--- Verbrauch: Scans und KI-Tokens pro Konto und Tag (jeder nutzt seinen eigenen API-Schlüssel).
-create table if not exists public.usage (
-  user_id uuid not null references auth.users (id) on delete cascade,
-  day date not null default current_date,
-  scans integer not null default 0,
-  input_tokens bigint not null default 0,
-  output_tokens bigint not null default 0,
-  primary key (user_id, day)
-);
+
+-- Nicht mehr gebraucht, seit die App nur noch ein Konto hat: Nutzerverwaltung und Verbrauchszählung.
+drop function if exists public.admin_users();
+drop function if exists public.admin_set_blocked(uuid, boolean);
+drop function if exists public.admin_set_password(uuid, text);
+drop function if exists public.admin_delete_user(uuid);
+drop function if exists public.track_usage(integer, integer, integer);
+drop table if exists public.usage;
 
 -- ========== Hilfsfunktionen ==========
 create or replace function public.is_admin() returns boolean
@@ -90,7 +88,6 @@ alter table public.items enable row level security;
 alter table public.history enable row level security;
 alter table public.profiles enable row level security;
 alter table public.admins enable row level security;
-alter table public.usage enable row level security;
 
 drop policy if exists "own cards" on public.cards;
 create policy "own cards" on public.cards for all to authenticated
@@ -111,10 +108,7 @@ create policy "own history" on public.history for all to authenticated
 drop policy if exists "own profile read" on public.profiles;
 create policy "own profile read" on public.profiles for select to authenticated
   using (user_id = (select auth.uid()));
-drop policy if exists "own usage read" on public.usage;
-create policy "own usage read" on public.usage for select to authenticated
-  using (user_id = (select auth.uid()));
-revoke insert, update, delete on public.profiles, public.usage from anon, authenticated;
+revoke insert, update, delete on public.profiles from anon, authenticated;
 revoke all on public.admins from anon, authenticated;
 
 -- ========== Bildspeicher ==========
@@ -124,7 +118,7 @@ values ('card-images', 'card-images', false, 5242880, array['image/jpeg'])
 on conflict (id) do nothing;
 
 -- Fotos liegen unter <user-id>/<bild-id>.jpg; jeder darf nur seinen eigenen Ordner nutzen.
--- Admins dürfen alle Fotos lesen (zum Wiederherstellen eines Kontos) und löschen (zum Entfernen eines Kontos).
+-- Der Besitzer darf auch ältere Ordner lesen und löschen (Sammlung eines früheren Kontos übernehmen).
 drop policy if exists "own images select" on storage.objects;
 create policy "own images select" on storage.objects for select to authenticated
   using (bucket_id = 'card-images' and (
@@ -157,7 +151,7 @@ do $$ declare t text; begin
 end $$;
 
 -- ========== Funktionen für die App ==========
--- Beim Anmelden: Profil anlegen bzw. "zuletzt aktiv" setzen, optional den Namen; liefert Name, Sperre, Admin.
+-- Beim Anmelden: Profil anlegen, optional den Namen setzen; liefert Name und ob das Konto Besitzer ist.
 create or replace function public.me(p_name text default null) returns json
 language plpgsql security definer set search_path = '' as $$
 declare
@@ -166,6 +160,8 @@ declare
   r public.profiles;
 begin
   if uid is null then raise exception 'not signed in' using errcode = '42501'; end if;
+  -- Das erste Konto wird Besitzer (auch wenn es erst nach dem Ausführen dieses Skripts angelegt wurde).
+  insert into public.admins (user_id) select uid where not exists (select 1 from public.admins) on conflict do nothing;
   insert into public.profiles (user_id, name, last_seen) values (uid, nm, now())
   on conflict (user_id) do update set last_seen = now(), name = coalesce(nm, public.profiles.name)
   returning * into r;
@@ -173,92 +169,35 @@ begin
     'admin', exists (select 1 from public.admins a where a.user_id = uid));
 end $$;
 
--- Nach jedem Scan: Verbrauch hochzählen (nur für das eigene Konto, mit Obergrenzen gegen Unsinn).
-create or replace function public.track_usage(p_scans integer, p_in integer, p_out integer) returns void
-language plpgsql security definer set search_path = '' as $$
-declare uid uuid := (select auth.uid());
-begin
-  if uid is null or public.is_blocked() then return; end if;
-  insert into public.usage (user_id, day, scans, input_tokens, output_tokens)
-  values (uid, current_date, greatest(0, least(coalesce(p_scans, 0), 50)), greatest(0, least(coalesce(p_in, 0), 2000000)), greatest(0, least(coalesce(p_out, 0), 200000)))
-  on conflict (user_id, day) do update set
-    scans = public.usage.scans + excluded.scans,
-    input_tokens = public.usage.input_tokens + excluded.input_tokens,
-    output_tokens = public.usage.output_tokens + excluded.output_tokens;
-end $$;
+revoke all on function public.me(text), public.is_admin(), public.is_blocked() from public, anon;
+grant execute on function public.me(text), public.is_admin(), public.is_blocked() to authenticated;
 
--- ========== Admin-Funktionen (prüfen selbst, ob der Aufrufer Admin ist) ==========
-create or replace function public.admin_users() returns table (
-  user_id uuid, login text, name text, created_at timestamptz, last_sign_in_at timestamptz, last_seen timestamptz,
-  blocked boolean, admin boolean, cards bigint, card_qty bigint, sessions bigint, value numeric,
-  scans bigint, scans_30d bigint, input_tokens bigint, output_tokens bigint)
-language plpgsql stable security definer set search_path = '' as $$
-begin
-  if not public.is_admin() then raise exception 'forbidden' using errcode = '42501'; end if;
-  return query
-  select u.id, u.email::text, p.name, u.created_at, u.last_sign_in_at, p.last_seen,
-    coalesce(p.blocked, false),
-    exists (select 1 from public.admins a where a.user_id = u.id),
-    (select count(*) from public.cards c where c.user_id = u.id)::bigint,
-    (select coalesce(sum(case when jsonb_typeof(c.data->'qty') = 'number' then (c.data->>'qty')::numeric else 1 end), 0) from public.cards c where c.user_id = u.id)::bigint,
-    (select count(*) from public.sessions s where s.user_id = u.id and s.data->>'status' = 'done')::bigint,
-    (select coalesce(sum(case when jsonb_typeof(c.data->'priceEur') = 'number'
-        then (c.data->>'priceEur')::numeric * (case when jsonb_typeof(c.data->'qty') = 'number' then (c.data->>'qty')::numeric else 1 end) else 0 end), 0)
-       from public.cards c where c.user_id = u.id)::numeric(12,2),
-    (select coalesce(sum(x.scans), 0) from public.usage x where x.user_id = u.id)::bigint,
-    (select coalesce(sum(x.scans), 0) from public.usage x where x.user_id = u.id and x.day > current_date - 30)::bigint,
-    (select coalesce(sum(x.input_tokens), 0) from public.usage x where x.user_id = u.id)::bigint,
-    (select coalesce(sum(x.output_tokens), 0) from public.usage x where x.user_id = u.id)::bigint
-  from auth.users u left join public.profiles p on p.user_id = u.id
-  order by u.created_at;
-end $$;
+-- ========== Nur ein Konto ==========
+-- Die App fragt beim Start, ob es schon ein Konto gibt: Wenn nicht, richtet sie es ein, sonst zeigt sie die Anmeldung.
+create or replace function public.setup_open() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select not exists (select 1 from auth.users);
+$$;
+revoke all on function public.setup_open() from public;
+grant execute on function public.setup_open() to anon, authenticated;
 
--- Konto sperren/entsperren. Sperren beendet auch die laufenden Anmeldungen des Kontos.
-create or replace function public.admin_set_blocked(p_user uuid, p_blocked boolean) returns void
+-- Sobald es ein Konto gibt, lehnt der Server jedes weitere ab (auch wenn jemand die App umgeht).
+-- Neues Konto statt des alten? Erst das alte unter Authentication → Users löschen.
+create or replace function public.only_one_account() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
-  if not public.is_admin() then raise exception 'forbidden' using errcode = '42501'; end if;
-  if p_user = (select auth.uid()) then raise exception 'Du kannst dein eigenes Konto nicht sperren.'; end if;
-  insert into public.profiles (user_id, blocked) values (p_user, coalesce(p_blocked, false))
-  on conflict (user_id) do update set blocked = excluded.blocked;
-  if p_blocked and to_regclass('auth.sessions') is not null then
-    execute 'delete from auth.sessions where user_id = $1' using p_user;
+  if exists (select 1 from auth.users) then
+    raise exception 'Diese App hat schon ein Konto.' using errcode = '42501';
   end if;
+  return new;
 end $$;
+revoke all on function public.only_one_account() from public, anon, authenticated;
+drop trigger if exists only_one_account on auth.users;
+create trigger only_one_account before insert on auth.users
+  for each row execute function public.only_one_account();
 
--- Vorläufiges Passwort setzen (die App schickt es bereits gehasht, wie beim Login).
-create or replace function public.admin_set_password(p_user uuid, p_hash text) returns void
-language plpgsql security definer set search_path = '' as $$
-begin
-  if not public.is_admin() then raise exception 'forbidden' using errcode = '42501'; end if;
-  if p_hash is null or length(p_hash) < 20 then raise exception 'Ungültiges Passwort.'; end if;
-  update auth.users set encrypted_password = extensions.crypt(p_hash, extensions.gen_salt('bf')), updated_at = now()
-   where id = p_user;
-  if not found then raise exception 'Konto nicht gefunden.'; end if;
-  if to_regclass('auth.sessions') is not null then
-    execute 'delete from auth.sessions where user_id = $1' using p_user;
-  end if;
-end $$;
-
--- Konto mit allen Daten löschen (die App entfernt vorher die Fotos des Kontos).
-create or replace function public.admin_delete_user(p_user uuid) returns void
-language plpgsql security definer set search_path = '' as $$
-begin
-  if not public.is_admin() then raise exception 'forbidden' using errcode = '42501'; end if;
-  if p_user = (select auth.uid()) then raise exception 'Du kannst dein eigenes Konto hier nicht löschen.'; end if;
-  delete from auth.users where id = p_user;
-  if not found then raise exception 'Konto nicht gefunden.'; end if;
-end $$;
-
-revoke all on function public.me(text), public.track_usage(integer, integer, integer), public.admin_users(),
-  public.admin_set_blocked(uuid, boolean), public.admin_set_password(uuid, text), public.admin_delete_user(uuid),
-  public.is_admin(), public.is_blocked() from public, anon;
-grant execute on function public.me(text), public.track_usage(integer, integer, integer), public.admin_users(),
-  public.admin_set_blocked(uuid, boolean), public.admin_set_password(uuid, text), public.admin_delete_user(uuid),
-  public.is_admin(), public.is_blocked() to authenticated;
-
--- ========== Erster Admin ==========
--- Solange es noch keinen Admin gibt, wird das älteste Konto Admin (normalerweise deins).
+-- ========== Besitzer ==========
+-- Solange es noch keinen gibt, wird das älteste Konto Besitzer (normalerweise deins).
 -- Prüfen: select * from public.admins;  Ändern: insert into public.admins (user_id) values ('<Konto-ID>');
 insert into public.admins (user_id)
 select id from auth.users where not exists (select 1 from public.admins) order by created_at limit 1

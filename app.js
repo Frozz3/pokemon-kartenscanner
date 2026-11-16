@@ -96,7 +96,6 @@
       // The API key belongs to the signed-in account on this device (others on the same phone don't use it).
       get apiKey() { const u = window.__ksUid; return u ? read("apikey:" + u, "") : ""; },
       set apiKey(v) { const u = window.__ksUid; if (u) write("apikey:" + u, v); },
-      get closeLogout() { return read("closelogout", "1") === "1"; }, set closeLogout(v) { write("closelogout", v ? "1" : "0"); },
       get tech() { return read("tech", "0") === "1"; }, set tech(v) { write("tech", v ? "1" : "0"); },
       get model() { return read("model", MODELS[0][0]); }, set model(v) { write("model", v); },
       get sort() { return read("sort", "value"); }, set sort(v) { write("sort", v); },
@@ -104,7 +103,6 @@
       get auto() { return read("auto", "1") === "1"; }, set auto(v) { write("auto", v ? "1" : "0"); },
       get setSort() { return read("setsort", "progress"); }, set setSort(v) { write("setsort", v); },
       get cardSort() { return read("cardsort", "num"); }, set cardSort(v) { write("cardsort", v); },
-      get idle() { const n = Number(read("idle", "15")); return isFinite(n) ? n : 15; }, set idle(v) { write("idle", String(v)); },
     };
   })();
 
@@ -240,13 +238,12 @@
     cards: [], sessions: [], items: [], open: null, loaded: false, problem: null,
     running: new Set(), stage: new Map(), tab: "scan", search: "", sort: settings.sort,
     sheet: null, imgCache: new Map(), busy: false, refreshing: null, test: null, marketDown: null,
-    user: null, authReady: false, recovery: false, authMode: "login", authBusy: false, authMsg: null, authErr: null, authEmail: "",
+    user: null, authReady: false, recovery: false, setupOpen: false, authBusy: false, authMsg: null, authErr: null, authEmail: "",
     legacy: null, migrating: null, lastSync: 0,
     history: [], historyOk: true, setInfo: new Map(), setPrices: new Map(), setPricesBusy: null,
     me: null, // { name, admin, blocked } from the server
   };
-  const isAdmin = () => !!(state.me && state.me.admin);
-  const tech = () => isAdmin() && settings.tech; // technical details only for admins who switched them on
+  const tech = () => settings.tech; // technical details, switched on under Werkzeuge → Technik
 
   async function save(store, obj) {
     if (store === "cards") scheduleSnapshot();
@@ -356,7 +353,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     }
     const j = await res.json();
     const u = j.usage || {};
-    if (sb && state.user) try { quiet(sb.rpc("track_usage", { p_scans: 1, p_in: u.input_tokens || 0, p_out: u.output_tokens || 0 })); } catch (_) {}
     const text = (j.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
     if (opts.raw) opts.raw({ text, usage: u, model: j.model, ms: Math.round(performance.now() - t0) });
     return extractJSON(text);
@@ -1353,38 +1349,34 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   function authMsg(e) {
     const code = (e && (e.code || e.error_code)) || "", msg = String((e && e.message) || "");
     if (code === "invalid_credentials" || /invalid login/i.test(msg)) return "E-Mail oder Passwort ist falsch.";
-    if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) { logErr("Anmeldung", "Konto nicht bestätigt („Confirm email“ ausschalten)"); return "Dein Konto ist noch nicht freigeschaltet. Wende dich an den Admin der App."; }
+    if (code === "email_not_confirmed" || /not confirmed/i.test(msg)) { logErr("Anmeldung", "Konto nicht bestätigt („Confirm email“ ausschalten)"); return "Das Konto ist noch nicht freigeschaltet: Schalte in Supabase „Confirm email“ aus (siehe README)."; }
     if (code === "user_already_exists" || code === "email_exists" || /already registered/i.test(msg)) return "Mit dieser E-Mail gibt es schon ein Konto. Melde dich an.";
     if (code === "same_password" || /should be different/i.test(msg)) return "Das neue Passwort muss sich vom alten unterscheiden.";
     if (code === "weak_password" || /password should/i.test(msg)) return "Das Passwort ist zu schwach. Nimm mindestens 8 Zeichen.";
     if (code !== "over_email_send_rate_limit" && (/rate.?limit/i.test(code + " " + msg) || (e && e.status === 429))) return "Zu viele Versuche in kurzer Zeit. Warte ein paar Minuten.";
-    if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind gerade nicht möglich. Versuch es später erneut.";
-    if (/sending.*email|confirmation email|email_address_not_authorized|over_email_send_rate_limit|not authorized/i.test(code + " " + msg)) { logErr("Anmeldung", "Supabase will eine Bestätigungs-Mail senden: „Confirm email“ ausschalten"); return "Das Konto lässt sich gerade nicht anlegen. Wende dich an den Admin der App."; }
+    if (/database error saving new user/i.test(msg)) return "Diese App hat schon ein Konto. Melde dich damit an.";
+    if (code === "signup_disabled" || /signups not allowed/i.test(msg)) return "Neue Konten sind in Supabase ausgeschaltet. Schalte „Allow new users to sign up“ für das erste Konto kurz ein (siehe README).";
+    if (/sending.*email|confirmation email|email_address_not_authorized|over_email_send_rate_limit|not authorized/i.test(code + " " + msg)) { logErr("Anmeldung", "Supabase will eine Bestätigungs-Mail senden: „Confirm email“ ausschalten"); return "Das Konto lässt sich nicht anlegen: Schalte in Supabase „Confirm email“ aus (siehe README)."; }
     if (/fetch|network/i.test(msg)) return "Keine Verbindung zum Server. Prüfe dein Internet.";
-    // Never show raw server messages (they can contain the internal login id); the admin finds them in the log.
+    // Never show raw server messages (they can contain the internal login id); they go to the error log (Werkzeuge → Wartung).
     logErr("Anmeldung", (code ? code + ": " : "") + msg);
-    return "Das hat nicht geklappt. Versuch es erneut oder wende dich an den Admin der App.";
+    return "Das hat nicht geklappt. Versuch es erneut.";
   }
 
   function renderAuth() {
     const v = $("#view-auth");
     if (state.problem) { v.innerHTML = `<div class="notice"><strong>App noch nicht eingerichtet.</strong><br>${esc(state.problem)}</div>`; return; }
     if (!sb || !state.authReady) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
-    const m = state.recovery ? "newpw" : (state.authMode === "reset" ? "login" : state.authMode);
+    const m = state.recovery ? "newpw" : state.setupOpen ? "signup" : "login";
     const T = {
-      login: ["Anmelden", "Melde dich mit deiner E-Mail-Adresse an.", "Anmelden"],
-      signup: ["Konto erstellen", "Sammle deine Pokémon-Karten und sieh, was sie wert sind.", "Konto erstellen"],
+      login: ["Anmelden", "Melde dich einmal mit deiner E-Mail-Adresse an. Danach bleibst du auf diesem Gerät angemeldet.", "Anmelden"],
+      signup: ["Konto einrichten", "Einmalig: Leg das Konto für diese App an. Danach bleibst du auf diesem Gerät angemeldet.", "Konto anlegen"],
       newpw: ["Neues Passwort", "Leg ein neues Passwort für dein Konto fest.", "Passwort speichern"],
     }[m];
     const nameField = m === "signup" ? `<label class="full"><span>Dein Name <span class="muted">(optional)</span></span><input class="field" id="a-name" name="name" autocomplete="nickname" maxlength="40" value="${esc(state.authName || "")}"></label>` : "";
     const pw2 = m === "signup" || m === "newpw" ? `<label class="full">Passwort wiederholen<input class="field" id="a-pw2" name="pw2" type="password" autocomplete="new-password" required></label>` : "";
     const user = m !== "newpw" ? `<label class="full">E-Mail<input class="field" id="a-user" name="user" type="email" inputmode="email" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required value="${esc(state.authEmail)}"></label>` : "";
     const pw = `<label class="full">${m === "newpw" ? "Neues Passwort (mind. 8 Zeichen)" : m === "signup" ? "Passwort (mind. 8 Zeichen)" : "Passwort"}<input class="field" id="a-pw" name="pw" type="password" autocomplete="${m === "login" ? "current-password" : "new-password"}" required></label>`;
-    const links = {
-      login: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="signup">Noch kein Konto? Registrieren</button>`,
-      signup: `<button class="btn ghost small" type="button" data-act="auth-mode" data-mode="login">Schon ein Konto? Anmelden</button>`,
-      newpw: "",
-    }[m];
     // Keep what was typed when the form is drawn again (e.g. after an error message).
     const kept = v.dataset.mode === m ? [...v.querySelectorAll("input")].map(i => [i.id, i.value]) : [];
     v.dataset.mode = m;
@@ -1397,8 +1389,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           ${nameField}${user}${pw}${pw2}
           <button class="btn primary full" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Einen Moment …" : T[2]}</button>
         </form>
-        <div class="auth-links">${links}</div>
-        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Der Admin der App kann dir ein vorläufiges Passwort geben.</p>` : ""}
+        ${m === "login" ? `<p class="fine" style="margin:0">Passwort vergessen? Im README steht, wie du es in Supabase zurücksetzt.</p>` : ""}
         ${m === "signup" ? `<p class="fine" style="margin:0">Deine E-Mail-Adresse wird nur unkenntlich gespeichert. Deshalb gibt es keinen Link zum Zurücksetzen: Merk dir dein Passwort gut.</p>` : ""}
       </section>`;
     for (const [id, val] of kept) { const el = id && document.getElementById(id); if (el && val) el.value = val; }
@@ -1427,7 +1418,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         const { data, error } = await sb.auth.signUp({ email: await emailIdOf(u), password: await pwHash(pw) }); if (error) throw error;
         try { localStorage.setItem("ks-login", u); } catch (_) {}
         state.authName = "";
-        if (!data.session) { state.authMode = "login"; logErr("Registrierung", "Konto wartet auf E-Mail-Bestätigung (Confirm email in Supabase ausschalten)"); state.authErr = "Dein Konto wurde angelegt, ist aber noch nicht freigeschaltet. Wende dich an den Admin der App."; }
+        state.setupOpen = false;
+        if (!data.session) { logErr("Registrierung", "Konto wartet auf E-Mail-Bestätigung (Confirm email in Supabase ausschalten)"); state.authErr = "Das Konto wurde angelegt, ist aber noch nicht freigeschaltet: Schalte in Supabase „Confirm email“ aus und melde dich dann an."; }
       } else if (m === "newpw") {
         const { error } = await sb.auth.updateUser({ password: await pwHash(pw) }); if (error) throw error;
         state.recovery = false; toast("Neues Passwort gespeichert.");
@@ -1636,7 +1628,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const v = $("#view-value");
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
     if (!state.historyOk) {
-      v.innerHTML = `<div class="notice">Die Wertentwicklung ist gerade nicht verfügbar.${isAdmin() ? " (Admin: In der Datenbank fehlt die Tabelle „history“. supabase/schema.sql ausführen.)" : ""}</div>`;
+      v.innerHTML = `<div class="notice">Die Wertentwicklung ist gerade nicht verfügbar. (In der Datenbank fehlt die Tabelle „history“: supabase/schema.sql ausführen.)</div>`;
       return;
     }
     const total = state.cards.reduce((t, c) => t + (num(c.priceEur) || 0) * (c.qty || 1), 0);
@@ -1688,7 +1680,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   }
 
   // ---------- admin area (only accounts listed in public.admins; the server checks this too) ----------
-  const ADMIN_TABS = [["users", "Nutzer"], ["tests", "Tests"], ["tech", "Technik"], ["care", "Wartung"]];
+  const ADMIN_TABS = [["tests", "Tests"], ["tech", "Technik"], ["care", "Wartung"]];
   const ago = ts => {
     if (!ts) return "nie";
     const t = typeof ts === "number" ? ts : Date.parse(ts), m = Math.round((Date.now() - t) / 60e3);
@@ -1696,63 +1688,17 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const h = Math.round(m / 60); if (h < 24) return `vor ${h} Std.`;
     const d = Math.round(h / 24); return d < 30 ? `vor ${d} Tag${d === 1 ? "" : "en"}` : dOnly(t);
   };
-  const loginLabel = l => {
-    l = String(l || "");
-    if (/@kartenscanner\.invalid$/.test(l)) return l.replace(/@kartenscanner\.invalid$/, "").slice(0, 12) + "…";
-    const [a, d] = l.split("@"); return d ? a.slice(0, 2) + "•••@" + d : l;
-  };
   const nfmt = n => new Intl.NumberFormat("de-DE").format(Number(n) || 0);
   const fact = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`; // values are escaped by the caller
 
   function adminBody(s) {
-    const tabs = `<div class="seg seg4" role="group" aria-label="Bereich">${ADMIN_TABS.map(([k, l]) => `<button type="button" data-act="admin-tab" data-pane="${k}" aria-pressed="${s.tab === k}">${l}</button>`).join("")}</div>`;
-    const inner = s.tab === "users" ? (s.sel ? adminUserDetail(s) : adminUserList(s)) : s.tab === "tests" ? adminTests(s) : s.tab === "tech" ? adminTech() : adminCare(s);
+    const tabs = `<div class="seg" role="group" aria-label="Bereich">${ADMIN_TABS.map(([k, l]) => `<button type="button" data-act="admin-tab" data-pane="${k}" aria-pressed="${s.tab === k}">${l}</button>`).join("")}</div>`;
+    const inner = s.tab === "tech" ? adminTech() : s.tab === "care" ? adminCare(s) : adminTests(s);
     return `<div class="stack admin">${tabs}${inner}</div>`;
   }
   function adminAfterRender(s) {
     if (s.tab === "care" && !s.local && !s.localBusy) { s.localBusy = true; Cache.accounts().then(a => { s.local = a.filter(x => x.cards || x.sessions || x.history); s.localBusy = false; if (state.sheet === s) renderSheet(); }).catch(() => { s.local = []; s.localBusy = false; }); }
-    if (s.tab === "users" && !s.users && !s.usersLoading && !s.usersErr) adminLoadUsers();
     if (s.tab === "tests" && !s.diag && !s.diagBusy) adminDiag();
-  }
-  function adminUserList(s) {
-    if (s.usersErr) return `<div class="banner">${esc(s.usersErr)}</div><button class="btn" type="button" data-act="admin-reload">Erneut versuchen</button>`;
-    if (!s.users) return `<div class="notice">Wird geladen …</div>`;
-    const us = s.users, active = us.filter(u => u.last_seen && Date.now() - Date.parse(u.last_seen) < 30 * 864e5).length;
-    const sum = k => us.reduce((t, u) => t + (Number(u[k]) || 0), 0);
-    const stat = (l, v) => `<div class="stat"><div class="eyebrow">${l}</div><div class="v">${v}</div></div>`;
-    return `<div class="stats stats2">${stat("Konten", nfmt(us.length))}${stat("Aktiv (30 Tage)", nfmt(active))}${stat("Scans gesamt", nfmt(sum("scans")))}${stat("Karten gesamt", nfmt(sum("card_qty")))}</div>
-      <ul class="list ulist">${us.map(u => `<li><button class="urow" type="button" data-act="admin-user" data-id="${esc(u.user_id)}">
-        <div class="avatar" aria-hidden="true">${esc(((u.name || "?").trim().charAt(0) || "?").toUpperCase())}</div>
-        <div style="min-width:0"><div class="nm">${esc(u.name || "Ohne Namen")}${u.user_id === uidNow() ? ' <span class="badge">Du</span>' : ""}${u.admin ? ' <span class="badge">Admin</span>' : ""}${u.blocked ? ' <span class="badge bad">Gesperrt</span>' : ""}</div>
-        <div class="sub">${nfmt(u.card_qty)} Karten · ${money(Number(u.value))} · ${nfmt(u.scans)} Scans</div></div>
-        <div class="px"><small>${esc(ago(u.last_seen || u.last_sign_in_at))}</small></div></button></li>`).join("")}</ul>
-      <p class="gf">Namen geben die Nutzer selbst an; E-Mail-Adressen sind nur unkenntlich gespeichert. Fremde Karten siehst du nicht, nur Zahlen.</p>
-      <button class="btn" type="button" data-act="admin-reload">Aktualisieren</button>`;
-  }
-  function adminUserDetail(s) {
-    const u = (s.users || []).find(x => x.user_id === s.sel);
-    if (!u) return `<div class="notice">Konto nicht gefunden.</div><button class="btn" type="button" data-act="admin-back">‹ Alle Nutzer</button>`;
-    const self = u.user_id === uidNow();
-    return `<button class="btn ghost small back" type="button" data-act="admin-back">‹ Alle Nutzer</button>
-      <div class="dtitle"><h2>${esc(u.name || "Ohne Namen")}</h2><div class="sub">${esc(loginLabel(u.login))}${u.admin ? " · Admin" : ""}${u.blocked ? ' · <span class="bad-txt">gesperrt</span>' : ""}</div></div>
-      <dl class="facts">
-        ${fact("Konto seit", esc(dOnly(Date.parse(u.created_at))))}
-        ${fact("Zuletzt aktiv", esc(ago(u.last_seen || u.last_sign_in_at)))}
-        ${fact("Karten", `${nfmt(u.card_qty)} (${nfmt(u.cards)} verschiedene)`)}
-        ${fact("Sammlungswert", money(Number(u.value)))}
-        ${fact("Sessions", nfmt(u.sessions))}
-        ${fact("Scans", `${nfmt(u.scans)} (30 Tage: ${nfmt(u.scans_30d)})`)}
-        ${fact("KI-Tokens", `${nfmt(u.input_tokens)} rein · ${nfmt(u.output_tokens)} raus`)}
-      </dl>
-      ${s.msg ? `<div class="notice ok-box">${esc(s.msg)}</div>` : ""}${s.err ? `<div class="banner">${esc(s.err)}</div>` : ""}
-      ${self ? `<p class="gf">Das ist dein eigenes Konto.</p>` : `
-      <form class="edit" id="adminPwForm"><label class="full">Vorläufiges Passwort setzen<input class="field" name="pw" minlength="8" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="mind. 8 Zeichen" required></label>
-        <button class="btn full" type="submit" ${s.busy ? "disabled" : ""}>Passwort setzen</button></form>
-      <div class="actions">
-        <button class="btn" type="button" data-act="${u.blocked ? "admin-unblock" : "admin-block"}" data-id="${esc(u.user_id)}" ${s.busy ? "disabled" : ""}>${u.blocked ? "Entsperren" : "Sperren"}</button>
-        <button class="btn danger" type="button" data-act="${s.confirmDel ? "admin-delete-yes" : "admin-delete"}" data-id="${esc(u.user_id)}" ${s.busy ? "disabled" : ""}>${s.confirmDel ? "Endgültig löschen?" : "Konto löschen"}</button>
-      </div>
-      <p class="gf">Sperren meldet das Konto sofort ab, die Daten bleiben erhalten. Löschen entfernt das Konto mit allen Karten und Fotos endgültig.</p>`}`;
   }
   function adminTests(s) {
     const c = s.conn, t = s.scan, q = s.price, d = s.diag;
@@ -1785,7 +1731,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const noSet = cards.filter(c => !setIdOf(c)).length, amb = cards.filter(c => c.market && c.market.ambiguous).length;
     let host = "–"; try { host = new URL(CFG.supabaseUrl).host; } catch (_) {}
     return `<div class="group"><button class="cell" type="button" role="switch" aria-checked="${settings.tech}" data-act="set-tech"><span>Technik-Details in der App</span><span class="switch" aria-hidden="true"></span></button></div>
-      <p class="gf" style="margin-top:-8px">Zeigt Preisquelle, Zuordnung, KI-Sicherheit und Zusatzfelder überall in der App, nur für dich.</p>
+      <p class="gf" style="margin-top:-8px">Zeigt Preisquelle, Zuordnung, KI-Sicherheit und Zusatzfelder überall in der App.</p>
       <section><h3 class="gh">Preise (dein Inventar)</h3><dl class="facts">
         ${fact("Mit Marktpreis", `${nfmt(mk.length)} von ${nfmt(cards.length)}`)}${fact("Ältester Preisstand", isFinite(oldest) ? esc(dOnly(oldest)) : "–")}
         ${fact("Ohne Marktpreis", nfmt(noMk))}${fact("Eigener Preis", nfmt(hand))}${fact("Ohne Set", nfmt(noSet))}${fact("Mehrdeutig zugeordnet", nfmt(amb))}
@@ -1811,56 +1757,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       <section><h3 class="gh">Fehlerprotokoll (dieses Gerät)</h3>
         ${log.length ? `<ul class="list loglist">${log.slice(0, 40).map(x => `<li><div class="sub">${esc(new Date(x.t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }))} · ${esc(x.w)}</div><div class="logmsg">${esc(x.m)}</div></li>`).join("")}</ul>
           <div class="actions" style="margin-top:10px"><button class="btn small" type="button" data-act="admin-log-copy">Kopieren</button><button class="btn small danger" type="button" data-act="admin-log-clear">Leeren</button></div>` : `<div class="notice">Keine Fehler aufgezeichnet.</div>`}</section>`;
-  }
-  async function adminLoadUsers(force) {
-    const s = state.sheet; if (!s || s.type !== "admin" || s.usersLoading || (s.users && !force)) return;
-    s.usersLoading = true; s.usersErr = null; if (force) s.users = null; renderSheet();
-    try { const { data, error } = await sb.rpc("admin_users"); if (error) throw error; s.users = data || []; }
-    catch (e) {
-      logErr("Admin", e);
-      const m = String((e && (e.message || e.code)) || "");
-      s.usersErr = /forbidden/i.test(m) ? "Für diesen Bereich fehlen dir die Admin-Rechte." : /PGRST202|function|schema cache|does not exist/i.test(m) ? "Die Admin-Funktionen fehlen in der Datenbank. Führe supabase/schema.sql im SQL Editor aus." : "Die Nutzerliste ließ sich nicht laden.";
-    }
-    s.usersLoading = false; if (state.sheet === s) renderSheet();
-  }
-  const rpcErr = e => { const m = String((e && e.message) || ""); return m && m.length < 120 && !/^(forbidden|permission)/i.test(m) ? m : "Das hat nicht geklappt."; };
-  async function adminBlock(target, on) {
-    const s = state.sheet; s.busy = true; s.msg = s.err = null; renderSheet();
-    try {
-      const { error } = await sb.rpc("admin_set_blocked", { p_user: target, p_blocked: on }); if (error) throw error;
-      const u = (s.users || []).find(x => x.user_id === target); if (u) u.blocked = on;
-      s.msg = on ? "Konto gesperrt und abgemeldet." : "Konto entsperrt.";
-    } catch (e) { logErr("Admin", e); s.err = rpcErr(e); }
-    s.busy = false; if (state.sheet === s) renderSheet();
-  }
-  async function adminSetPassword(pw) {
-    const s = state.sheet; if (!s || !s.sel) return;
-    if (pw.length < 8) { s.err = "Das Passwort braucht mindestens 8 Zeichen."; s.msg = null; renderSheet(); return; }
-    s.busy = true; s.msg = s.err = null; renderSheet();
-    try {
-      // Same on-device hashing as the login, so the person can sign in with exactly this password.
-      const { error } = await sb.rpc("admin_set_password", { p_user: s.sel, p_hash: await pwHash(pw) }); if (error) throw error;
-      const u = (s.users || []).find(x => x.user_id === s.sel);
-      s.msg = `Passwort gesetzt. Gib es ${u && u.name ? u.name : "der Person"} weiter; ändern geht danach unter Einstellungen → Passwort ändern.`;
-    } catch (e) { logErr("Admin", e); s.err = rpcErr(e); }
-    s.busy = false; if (state.sheet === s) renderSheet();
-  }
-  async function adminDelete(target) {
-    const s = state.sheet; s.busy = true; s.msg = s.err = null; renderSheet();
-    try {
-      // Photos first (the database cannot delete files), then the account with all its rows.
-      const store = sb.storage.from(BUCKET);
-      for (let round = 0; round < 50; round++) {
-        const { data, error } = await store.list(target, { limit: 100 });
-        if (error) throw error;
-        const files = (data || []).filter(f => f && f.name && f.name !== ".emptyFolderPlaceholder").map(f => `${target}/${f.name}`);
-        if (!files.length) break;
-        const r = await store.remove(files); if (r.error) throw r.error;
-      }
-      const { error } = await sb.rpc("admin_delete_user", { p_user: target }); if (error) throw error;
-      s.users = (s.users || []).filter(x => x.user_id !== target); s.sel = null; toast("Konto gelöscht.");
-    } catch (e) { logErr("Admin", e); s.err = rpcErr(e); }
-    s.busy = false; s.confirmDel = false; if (state.sheet === s) renderSheet();
   }
   async function adminConn() {
     const s = state.sheet; if (!s) return;
@@ -1926,7 +1822,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     s.diagBusy = false; if (state.sheet === s) renderSheet();
   }
   // Copies a collection that is only left in this device's cache into the signed-in account,
-  // including its photos (admins may read other folders in the photo storage).
+  // including its photos (the owner of the app may read older account folders in the photo storage).
   async function adminRestore(oldUid) {
     const s = state.sheet; if (!s || !oldUid || oldUid === uidNow()) return;
     const stage = t => { s.restoreStage = t; if (state.sheet === s) renderSheet(); };
@@ -2295,19 +2191,17 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <div class="group">
             <div class="cell"><span>Angemeldet als</span><span class="val">${esc(shownUser())}</span></div>
             ${link("name", "Name", greetName() || "Nicht festgelegt")}
-            ${legacyLogin || isAdmin() ? link("login-email", legacyLogin ? "Auf E-Mail-Anmeldung umstellen" : "E-Mail ändern") : ""}
+            ${link("login-email", legacyLogin ? "Auf E-Mail-Anmeldung umstellen" : "E-Mail ändern")}
             ${link("pw-change", "Passwort ändern")}
-            ${sw("set-closelogout", settings.closeLogout, "Beim Schließen abmelden")}
-            <label class="cell"><span>Automatisch abmelden</span><select class="cell-select" id="set-idle">${IDLE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === settings.idle ? "selected" : ""}>${l}</option>`).join("")}</select></label>
           </div>
-          <p class="gf">${settings.closeLogout ? "Nach dem Schließen der App musst du dich neu anmelden. " : ""}Ohne Aktivität wirst du nach der eingestellten Zeit abgemeldet, aber nie während eines Scans.</p></section>
+          <p class="gf">Du bleibst auf diesem Gerät angemeldet, bis du dich abmeldest.</p></section>
         <section><h3 class="gh">Sicherung</h3>
           <div class="group">${link("export", "Backup speichern")}${link("import", "Backup laden")}</div>
           <p class="gf">Deine Sammlung ist in deinem Konto gespeichert. Ein Backup ist eine zusätzliche Kopie als Datei.</p></section>
         ${NATIVE ? `<section><h3 class="gh">App</h3>
           <div class="group"><div class="cell"><span>Version</span><span class="val">${app.build ? `Build ${app.build}` : "–"}</span></div>${app.update ? link("app-update", "Update laden", `Build ${app.update}`) : ""}</div>
           <p class="gf">${app.update ? (ANDROID ? "Eine neue Version ist da. Lade die APK herunter und installiere sie über die alte App; deine Daten bleiben erhalten." : "Eine neue Version ist da. Lade sie herunter und spiel sie mit Sideloadly über die alte App; deine Daten bleiben erhalten.") : "Du hast die aktuelle Version."}</p></section>` : ""}
-        ${isAdmin() ? `<section><h3 class="gh">Admin</h3><div class="group">${link("admin", "Admin-Bereich")}</div></section>` : ""}
+        <section><h3 class="gh">Werkzeuge</h3><div class="group">${link("admin", "Tests, Technik und Wartung")}</div></section>
         <div class="group"><button class="cell action danger center" type="button" data-act="logout">Abmelden</button></div>
         <p class="fine legal">Preise: Cardmarket über <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a>. Pokémon ist eine Marke von Nintendo, Creatures und GAME FREAK. Privates Fanprojekt.</p>
       </div>`;
@@ -2354,7 +2248,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <button class="btn primary full" type="submit" ${s.busy ? "disabled" : ""}>Speichern</button>
       </form>`;
     } else if (s.type === "admin") {
-      title = "Admin-Bereich";
+      title = "Werkzeuge";
       body = adminBody(s);
     }
     const prevSheet = root.querySelector(".scrim:not(.leaving) .sheet"), sheetKey = s.type + ":" + (s.id || "");
@@ -2375,10 +2269,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const lf = $("#leForm"); if (lf) lf.onsubmit = e => { e.preventDefault(); setLoginEmail(new FormData(lf)); };
     const kf = $("#keyForm"); if (kf) kf.onsubmit = e => { e.preventDefault(); saveKey(String(new FormData(kf).get("key") || "")); };
     const nf = $("#nameForm"); if (nf) nf.onsubmit = e => { e.preventDefault(); saveName(String(new FormData(nf).get("name") || "")); };
-    const apf = $("#adminPwForm"); if (apf) apf.onsubmit = e => { e.preventDefault(); adminSetPassword(String(new FormData(apf).get("pw") || "")); };
     const aqf = $("#adminPriceForm"); if (aqf) aqf.onsubmit = e => { e.preventDefault(); adminPriceTest(new FormData(aqf)); };
     const pf = $("#pwForm"); if (pf) pf.onsubmit = e => { e.preventDefault(); changePassword(new FormData(pf)); };
-    const si = $("#set-idle"); if (si) si.onchange = () => { settings.idle = Number(si.value); markActive(true); toast(settings.idle ? `Automatische Abmeldung nach ${idleLabel()} ohne Aktivität.` : "Automatische Abmeldung ist aus."); };
     if (s.type === "admin") adminAfterRender(s);
   }
 
@@ -2505,29 +2397,20 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "key-setup": openSheet({ type: "key" }); break;
       case "key-edit": state.sheet.edit = true; state.sheet.err = null; renderSheet(); setTimeout(() => { const k = $("#key-in"); if (k) k.focus(); }, 50); break;
       case "name": openSheet({ type: "name" }); break;
-      case "admin": openSheet({ type: "admin", tab: "users" }); adminLoadUsers(); break;
+      case "admin": openSheet({ type: "admin", tab: "tests" }); break;
       case "admin-tab": state.sheet.tab = el.dataset.pane; state.sheet.sel = null; renderSheet(); break;
-      case "admin-reload": adminLoadUsers(true); break;
-      case "admin-user": Object.assign(state.sheet, { sel: id, confirmDel: false, msg: null, err: null }); renderSheet(); break;
-      case "admin-back": Object.assign(state.sheet, { sel: null, msg: null, err: null }); renderSheet(); break;
-      case "admin-block": adminBlock(id, true); break;
-      case "admin-unblock": adminBlock(id, false); break;
-      case "admin-delete": state.sheet.confirmDel = true; renderSheet(); break;
-      case "admin-delete-yes": adminDelete(id); break;
       case "admin-conn": adminConn(); break;
       case "admin-scan": adminPickScan(); break;
       case "admin-clear-cache": adminClearCache(); break;
       case "admin-restore": adminRestore(id); break;
       case "admin-log-copy": { const t = readErrLog().map(x => `${new Date(x.t).toLocaleString("de-DE")} [${x.w}] ${x.m}`).join("\n"); (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast("Protokoll kopiert."), () => toast("Kopieren ging nicht.")); break; }
       case "admin-log-clear": try { localStorage.removeItem(ERRLOG_KEY); } catch (_) {} renderSheet(); break;
-      case "set-closelogout": haptic("light"); settings.closeLogout = !settings.closeLogout; el.setAttribute("aria-checked", String(settings.closeLogout)); break;
       case "set-tech": haptic("light"); settings.tech = !settings.tech; el.setAttribute("aria-checked", String(settings.tech)); render(); break;
       case "set-auto": haptic("light"); settings.auto = !settings.auto; el.setAttribute("aria-checked", String(settings.auto)); break;
       case "set-sound": haptic("light"); settings.sound = !settings.sound; el.setAttribute("aria-checked", String(settings.sound)); if (settings.sound) { audioUnlock(); cashSound(false); } break;
       case "app-update": if (releasePage()) window.open(releasePage(), "_blank"); break;
       case "key-del": settings.apiKey = ""; toast("Schlüssel entfernt."); if (state.sheet) { state.sheet.edit = false; renderSheet(); } render(); break;
       case "export": exportData(); break;
-      case "auth-mode": state.authMode = el.dataset.mode; state.authErr = null; state.authMsg = null; render(); break;
       case "logout": closeSheet(); dropDeviceCopy(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
       case "login-email": openSheet({ type: "login-email" }); break;
@@ -2638,7 +2521,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       state.me = data || null;
     } catch (e) { logErr("Profil", e); state.me = state.me || { admin: false, blocked: false, name: null, missing: true }; }
     if (state.me && state.me.blocked) {
-      state.authErr = "Dein Konto ist gesperrt. Wende dich an den Admin der App.";
+      state.authErr = "Dieses Konto ist gesperrt.";
       await sb.auth.signOut().catch(() => {});
       return false;
     }
@@ -2663,16 +2546,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     state.authReady = true;
     if (event === "PASSWORD_RECOVERY") { state.recovery = true; state.authErr = null; state.authMsg = null; }
     const user = session ? session.user : null;
-    // Start of the app with a stored login: decide once whether it may be resumed. This must not depend on
-    // the event name: Supabase reports a restored login as SIGNED_IN or TOKEN_REFRESHED before INITIAL_SESSION.
-    const firstEvent = !startupChecked; startupChecked = true;
-    if (user && firstEvent && !state.authBusy) {
-      if (settings.closeLogout && freshStart) { idleLogout("close"); return; }
-      if (idleExpired()) { idleLogout(); return; }
-    }
     if (!user) { state.user = null; state.me = null; window.__ksUid = null; state.recovery = false; clearData(); render(); return; }
     if (state.user && state.user.id === user.id) { state.user = user; render(); return; }
-    markActive(true);
     window.__ksUid = user.id;
     // Older versions kept one key per device: it now belongs to the first account that signs in here.
     try { const old = localStorage.getItem("ks-apikey"); if (old) { if (!settings.apiKey) settings.apiKey = old; localStorage.removeItem("ks-apikey"); } } catch (_) {}
@@ -2687,57 +2562,11 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     render();
   }
 
-  // ---------- automatic logout after inactivity ----------
-  // The last activity time is kept in localStorage, so it also counts while the app was closed or in the background.
-  const IDLE_OPTIONS = [[0, "Nie"], [5, "5 Minuten"], [15, "15 Minuten"], [30, "30 Minuten"], [60, "1 Stunde"]];
-  const IDLE_WARN = 30e3;
-  const idleLabel = () => (IDLE_OPTIONS.find(o => o[0] === settings.idle) || [0, settings.idle + " Minuten"])[1];
-  let lastActive = Date.now(), lastActiveSaved = 0, idleWarned = false;
-  try { lastActive = Number(localStorage.getItem("ks-active")) || Date.now(); } catch (_) {}
-  function markActive(force) {
-    lastActive = Date.now();
-    if (idleWarned) { idleWarned = false; const t = $("#toast"); if (t && t.dataset.kind === "idle") t.hidden = true; }
-    if (force || lastActive - lastActiveSaved > 5000) { lastActiveSaved = lastActive; try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} }
-  }
-  const camLive = () => camOpen() && !document.hidden && stream.getTracks().some(t => t.readyState === "live");
-  const appBusy = () => camLive() || state.running.size > 0 || !!state.refreshing || !!state.migrating || state.busy || !!state.setPricesBusy || state.authBusy;
-  const idleExpired = () => { if (!settings.idle) return false; let t = lastActive; try { t = Math.max(t, Number(localStorage.getItem("ks-active")) || 0); } catch (_) {} return Date.now() - t >= settings.idle * 60e3; };
-  // "Closed" = this page was started fresh (sessionStorage is empty after the app was closed or removed from
-  // memory; it survives reloads and switching apps).
-  let startupChecked = false, freshStart = true;
-  try { freshStart = !sessionStorage.getItem("ks-open"); sessionStorage.setItem("ks-open", "1"); } catch (_) {}
-  async function idleLogout(reason) {
-    if (camOpen()) closeCamera();
-    closeSheet();
-    idleWarned = false;
-    const t = $("#toast"); if (t && t.dataset.kind === "idle") t.hidden = true;
-    const label = idleLabel();
-    state.authMode = "login"; state.authErr = null;
-    dropDeviceCopy();
-    try { await sb.auth.signOut({ scope: "local" }); } catch (_) {}
-    state.user = null; clearData();
-    state.authMsg = reason === "close" ? "Du wurdest abgemeldet, weil die App geschlossen wurde." : `Du wurdest nach ${label} ohne Aktivität abgemeldet.`;
-    render();
-  }
-  function idleCheck() {
-    if (!sb || !state.user || state.recovery || !settings.idle) return;
-    if (appBusy()) { markActive(); return; }
-    const limit = settings.idle * 60e3, idle = Date.now() - lastActive;
-    if (idleExpired()) { idleLogout(); return; }
-    if (idle >= limit - IDLE_WARN && !idleWarned) {
-      idleWarned = true;
-      toast(`Du wirst in ${Math.max(1, Math.round((limit - idle) / 1000))} Sekunden wegen Inaktivität abgemeldet.`, { duration: IDLE_WARN + 2000, kind: "idle", action: { label: "Angemeldet bleiben", fn: () => markActive(true) } });
-    }
-  }
-  for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) document.addEventListener(ev, () => markActive(), { capture: true, passive: true });
-  document.addEventListener("scroll", () => markActive(), { capture: true, passive: true });
-  // Coming back to the app (unlocked phone, switched apps, restored page): decide on the stored time
-  // before anything still marked as running can count as activity.
-  function onReturn() { if (!sb || !state.user || state.recovery || !settings.idle) return; if (idleExpired()) idleLogout(); else idleCheck(); }
-  document.addEventListener("visibilitychange", () => { if (document.hidden) { try { localStorage.setItem("ks-active", String(lastActive)); } catch (_) {} } else onReturn(); });
-  window.addEventListener("pageshow", onReturn);
-  window.addEventListener("focus", onReturn);
-  setInterval(idleCheck, 5000);
+
+  // ---------- staying signed in ----------
+  // The app has one owner: the login is kept on this device until "Abmelden". Older versions logged out
+  // on close or after inactivity; their leftover settings are removed here.
+  try { for (const k of ["ks-closelogout", "ks-idle", "ks-active"]) localStorage.removeItem(k); sessionStorage.removeItem("ks-open"); } catch (_) {}
 
   render();
   if (!window.supabase || !CFG.supabaseUrl || !CFG.supabaseKey) {
@@ -2747,6 +2576,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
     // Supabase advises against awaiting other Supabase calls inside this callback, hence the timeout.
     sb.auth.onAuthStateChange((event, session) => { setTimeout(() => onAuth(event, session), 0); });
+    // A new instance has no account yet: then the start screen sets up the one account instead of asking to sign in.
+    try { Promise.resolve(sb.rpc("setup_open")).then(r => { if (r && r.data === true && !state.user) { state.setupOpen = true; render(); } }, () => {}); } catch (_) {}
     // Pick up changes made on another device when the app comes back to the foreground.
     document.addEventListener("visibilitychange", () => {
       if (document.hidden || !state.user || state.recovery || state.busy || state.running.size || state.sheet || camOpen()) return;
