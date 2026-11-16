@@ -29,7 +29,7 @@ if (url || key) {
   if (!url || !key) fail("SUPABASE_URL und SUPABASE_KEY müssen beide gesetzt sein.");
   let u;
   try { u = new URL(url); } catch (_) { fail(`SUPABASE_URL ist keine gültige Adresse: ${url}`); }
-  if (u.protocol !== "https:") fail("SUPABASE_URL muss mit https:// beginnen (Android und iOS erlauben nur verschlüsselte Verbindungen).");
+  if (u.protocol !== "https:") fail("SUPABASE_URL muss mit https:// beginnen (iOS erlaubt nur verschlüsselte Verbindungen).");
   const role = (() => { try { return JSON.parse(Buffer.from(key.split(".")[1], "base64url").toString()).role; } catch (_) { return null; } })();
   if (/^sb_secret_/.test(key) || role === "service_role") fail("SUPABASE_KEY ist ein GEHEIMER Schlüssel. Nimm den publishable- bzw. anon-Schlüssel (Project Settings → API) und tausche den geheimen Schlüssel in Supabase aus.");
   writeFileSync("www/config.js", `// Generated at build time from the repository variables SUPABASE_URL and SUPABASE_KEY.\nwindow.KS_CONFIG = ${JSON.stringify({ supabaseUrl: u.origin, supabaseKey: key }, null, 2)};\n`);

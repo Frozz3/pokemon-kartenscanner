@@ -56,7 +56,7 @@
       </button>
     </div>
   </header>
-  <div class="brand" id="brand">
+  <div class="brand" id="brand" role="region" aria-labelledby="pageTitle">
     <h1 id="pageTitle">Kartenscanner</h1>
     <div class="subtitle" id="subtitle" hidden>Sammlung <b id="worth">–</b></div>
   </div>
@@ -69,7 +69,7 @@
     <div class="stats" id="invStats"></div>
     <div id="invPrices"></div>
     <div class="toolbar">
-      <input class="field" id="invSearch" type="search" placeholder="Suchen" autocomplete="off">
+      <input class="field" id="invSearch" type="search" placeholder="Suchen" aria-label="Inventar durchsuchen" autocomplete="off">
       <select class="field" id="invSort" aria-label="Sortierung">
         <option value="value">Wert</option>
         <option value="new">Neueste</option>

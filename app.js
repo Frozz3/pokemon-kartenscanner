@@ -14,6 +14,7 @@
   const money = v => num(v) === null ? "–" : eur.format(v);
   const usd = v => num(v) === null ? "–" : usdF.format(v);
   const r2 = v => num(v) === null ? null : Math.round(v * 100) / 100;
+  const int = v => { const n = Math.round(Number(v)); return isFinite(n) ? n : 0; }; // counts from stored data: always a plain number
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const dt = ts => ts ? new Date(ts).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
   const dOnly = ts => ts ? new Date(ts).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }) : "–";
@@ -61,13 +62,11 @@
     document.documentElement.classList.add("native");
     const vp = document.querySelector('meta[name="viewport"]'); if (vp) vp.setAttribute("content", "width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover");
   }
-  // iOS or Android; each instance (fork) publishes its builds as releases "ios-latest" / "android-latest"
+  // Each instance (fork) publishes its build as the release "ios-latest"
   // in its own GitHub repository, which version.json names (written at build time).
-  const PLATFORM = NATIVE && typeof Cap.getPlatform === "function" ? Cap.getPlatform() : "web";
-  const ANDROID = PLATFORM === "android";
-  const APP_LABEL = ANDROID ? "Android-App" : "iOS-App";
+  const APP_LABEL = "iOS-App";
   const app = { build: 0, update: 0, repo: "" };
-  const releasePage = () => app.repo ? `https://github.com/${app.repo}/releases/tag/${PLATFORM}-latest` : "";
+  const releasePage = () => app.repo ? `https://github.com/${app.repo}/releases/tag/ios-latest` : "";
   async function checkAppUpdate() {
     if (!NATIVE) return;
     try { const v = await (await fetch("version.json", { cache: "no-store" })).json(); app.build = Number(v.build) || 0; app.repo = /^[\w.-]+\/[\w.-]+$/.test(v.repo || "") ? v.repo : ""; } catch (_) {}
@@ -75,7 +74,7 @@
     let last = 0, known = 0; try { last = Number(localStorage.getItem("ks-updchk") || 0); known = Number(localStorage.getItem("ks-updbuild") || 0); } catch (_) {}
     if (Date.now() - last > 6 * 3600e3) {
       try {
-        const r = await fetch(`https://api.github.com/repos/${app.repo}/releases/tags/${PLATFORM}-latest`, { headers: { accept: "application/vnd.github+json" } });
+        const r = await fetch(`https://api.github.com/repos/${app.repo}/releases/tags/ios-latest`, { headers: { accept: "application/vnd.github+json" } });
         if (r.ok) { const m = /Build\s+(\d+)/i.exec((await r.json()).name || ""); known = m ? Number(m[1]) : 0; }
         localStorage.setItem("ks-updchk", String(Date.now())); localStorage.setItem("ks-updbuild", String(known));
       } catch (_) {}
@@ -838,6 +837,14 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
 
   // ---------- import / migration ----------
   async function importRecords(data, progress) {
+    // Only well-formed records: an id that is plain text, and whole numbers where the app expects counts.
+    const okId = v => v && typeof v.id === "string" && /^[\w.:-]{1,80}$/.test(v.id);
+    const count = (o, k) => { if (o && o[k] != null) o[k] = Math.max(0, Math.min(99999, int(o[k]))); };
+    for (const k of ["cards", "sessions", "items"]) {
+      data[k] = (Array.isArray(data[k]) ? data[k] : []).filter(okId);
+      for (const v of data[k]) { count(v, "qty"); count(v, "count"); count(v, "added"); count(v, "merged"); if (Array.isArray(v.summary)) v.summary.forEach(x => count(x, "qty")); }
+    }
+    data.images = (Array.isArray(data.images) ? data.images : []).filter(v => okId(v) && typeof v.data === "string" && v.data.startsWith("data:image/jpeg"));
     const imgs = data.images || [];
     let n = 0; const total = imgs.length + ["cards", "sessions", "items"].reduce((t, k) => t + (data[k] || []).length, 0);
     const tick = () => { n++; if (progress) progress(n, total); };
@@ -864,20 +871,30 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const data = { app: "pokemon-kartenscanner", version: 2, exportedAt: new Date().toISOString(), cards: state.cards, sessions: state.sessions, items: state.items };
     const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
     const name = `kartenscanner-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const saved = () => { try { localStorage.setItem("ks-lastbackup", String(Date.now())); localStorage.removeItem("ks-backuplater"); } catch (_) {} if (state.tab === "scan") render(); };
     const fs = plug("Filesystem"), share = plug("Share");
     if (fs && share) {
       try {
         const { uri } = await fs.writeFile({ path: name, data: JSON.stringify(data), directory: "CACHE", encoding: "utf8" });
-        await share.share({ title: "Kartenscanner-Backup", url: uri, dialogTitle: "Backup sichern" });
+        await share.share({ title: "Kartenscanner-Backup", url: uri, dialogTitle: "Backup sichern" }); saved();
       } catch (e) { if (!/cancel/i.test(String(e && (e.message || e)))) toast("Das Backup ließ sich nicht teilen."); }
       return;
     }
     const file = new File([blob], name, { type: "application/json" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file], title: "Kartenscanner-Backup" }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+      try { await navigator.share({ files: [file], title: "Kartenscanner-Backup" }); saved(); return; } catch (e) { if (e && e.name === "AbortError") return; }
     }
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
-    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); saved();
+  }
+  // The server keeps no backups of its own: remind every 30 days once the collection is worth protecting.
+  const BACKUP_DAYS = 30;
+  function backupBanner() {
+    if (state.cards.length < 10) return "";
+    let last = 0, later = 0; try { last = Number(localStorage.getItem("ks-lastbackup")) || 0; later = Number(localStorage.getItem("ks-backuplater")) || 0; } catch (_) { return ""; }
+    const due = Date.now() - BACKUP_DAYS * 864e5;
+    if (last > due || later > Date.now() - 7 * 864e5) return "";
+    return `<div class="banner info"><span>${last ? `Dein letztes Backup ist über ${BACKUP_DAYS} Tage alt.` : "Du hast noch kein Backup deiner Sammlung."} Der Server hat keine eigene Sicherung.</span><span class="banner-acts"><button class="btn small" type="button" data-act="export">Backup speichern</button><button class="btn small ghost" type="button" data-act="backup-later">Später</button></span></div>`;
   }
   async function importData(file) {
     try {
@@ -1180,6 +1197,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     clearInterval(camTimer); camTimer = null;
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null; $("#camera").hidden = true; $("#camVideo").srcObject = null; statusBar(isDark());
+    backdrop().forEach(e => { e.inert = !!state.sheet; });
+    const cb = document.querySelector('[data-act="camera"]'); if (cb) try { cb.focus({ preventScroll: true }); } catch (_) {}
   }
   function updateCamTools() {
     $("#camAutoBtn").setAttribute("aria-pressed", String(settings.auto));
@@ -1342,8 +1361,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     throw lastErr;
   }
   const shownUser = () => {
-    let n = ""; try { n = localStorage.getItem("ks-login") || localStorage.getItem("ks-username") || ""; } catch (_) {}
-    return n || (state.user && !isPseudo(state.user.email) ? state.user.email : "dein Konto");
+    return state.user && !isPseudo(state.user.email) ? state.user.email : "dein Konto";
   };
 
   function authMsg(e) {
@@ -1382,7 +1400,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     v.dataset.mode = m;
     v.innerHTML = `<section class="start auth">
         <img class="auth-logo" src="icons/icon.svg" alt="" width="64" height="64">
-        <h2>${T[0]}</h2><p>${T[1]}</p>
+        <h1>${T[0]}</h1><p>${T[1]}</p>
         ${state.authMsg ? `<div class="notice ok-box">${esc(state.authMsg)}</div>` : ""}
         ${state.authErr ? `<div class="banner">${esc(state.authErr)}</div>` : ""}
         <form class="edit" id="authForm" novalidate>
@@ -1412,11 +1430,9 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     try {
       if (m === "login") {
         await signIn(u, pw);
-        try { localStorage.setItem("ks-login", u); } catch (_) {}
       } else if (m === "signup") {
         state.pendingName = name; // stored with the profile right after the account is created
         const { data, error } = await sb.auth.signUp({ email: await emailIdOf(u), password: await pwHash(pw) }); if (error) throw error;
-        try { localStorage.setItem("ks-login", u); } catch (_) {}
         state.authName = "";
         state.setupOpen = false;
         if (!data.session) { logErr("Registrierung", "Konto wartet auf E-Mail-Bestätigung (Confirm email in Supabase ausschalten)"); state.authErr = "Das Konto wurde angelegt, ist aber noch nicht freigeschaltet: Schalte in Supabase „Confirm email“ aus und melde dich dann an."; }
@@ -1445,7 +1461,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       // Password first (only if it is still stored unhashed), then the login address. If Supabase refuses
       // to change the address directly (it would want to send a confirmation mail), show SQL with only the hash.
       if (ok !== hpw) { const { error } = await sb.auth.updateUser({ password: hpw }); if (error && error.code !== "same_password") throw error; }
-      try { localStorage.setItem("ks-login", email); } catch (_) {}
       let changed = false;
       try { const { data, error } = await sb.auth.updateUser({ email: id }); if (!error && data && data.user && data.user.email === id) { state.user = data.user; changed = true; } } catch (_) {}
       if (changed) s.done = "ok"; else { s.done = "sql"; s.sql = loginSql(state.user.id, id); }
@@ -1474,7 +1489,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (state.problem) { v.innerHTML = `<div class="notice"><strong>Speicher nicht verfügbar.</strong><br>${esc(state.problem)}</div>`; return; }
     if (!state.loaded) { v.innerHTML = `<div class="notice">Wird geladen …</div>`; return; }
     const keyBanner = !settings.apiKey ? `<div class="banner info"><span>Damit die App Karten automatisch erkennt, richte einmalig die Erkennung ein. Bis dahin kannst du Karten über „Suchen“ hinzufügen.</span><button class="btn small" type="button" data-act="key-setup">Einrichten</button></div>` : "";
-    const down = (state.marketDown ? `<div class="banner">${esc(state.marketDown)}</div>` : "") + legacyBanner();
+    const down = (state.marketDown ? `<div class="banner">${esc(state.marketDown)}</div>` : "") + legacyBanner() + backupBanner();
     const scanButtons = `
       <div class="scanrow">
         <button class="btn primary" type="button" data-act="camera">${I.cam}<span>Karte scannen</span></button>
@@ -1491,7 +1506,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           ${state.sessions.some(x => x.status === "done") ? "" : `<div class="steps"><div><b>Scannen</b>Karte gut beleuchtet in den Rahmen halten.</div><div><b>Prüfen</b>Antippen, falls etwas nicht stimmt.</div><div><b>Abschließen</b>Gesamtwert sehen und ins Inventar legen.</div></div>`}
           ${scanButtons}
         </section>
-        ${last ? `<div class="notice">Letzte Session am ${esc(dOnly(last.finishedAt))}: <strong>${last.count || 0} Karten</strong> · <strong class="mono">${money(last.total)}</strong></div>` : ""}`;
+        ${last ? `<div class="notice">Letzte Session am ${esc(dOnly(last.finishedAt))}: <strong>${int(last.count)} Karten</strong> · <strong class="mono">${money(last.total)}</strong></div>` : ""}`;
       return;
     }
     const items = openItems();
@@ -1539,13 +1554,34 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       <button class="btn small ghost danger" type="button" data-act="remove" data-id="${esc(it.id)}">Entfernen</button></div></div><div></div></li>`;
     const lowConf = num(c.confidence) !== null && c.confidence < 0.6;
     const noMarket = c.priceSource !== "markt" && c.priceSource !== "hand";
-    return `<li class="row" data-act="edit-item" data-id="${esc(it.id)}" tabindex="0" role="button" aria-label="${esc(c.name)} bearbeiten">${mini}
+    return `<li class="row" data-act="edit-item" data-id="${esc(it.id)}" tabindex="0" role="button">${mini}
       <div style="min-width:0"><div class="nm">${esc(c.name)}</div><div class="sub">${subLine(c)}</div>
       <div class="chips">${dupChips(state.dupView && state.dupView.get(it.id))}${lowConf ? '<span class="chip warn">unsicher – prüfen</span>' : ""}${c.market && c.market.ambiguous ? '<span class="chip warn">bitte prüfen</span>' : ""}${c.condition && c.condition !== "NM" ? `<span class="chip">${esc(c.condition)}</span>` : ""}${c.variant && c.variant !== "Normal" ? `<span class="chip">${esc(c.variant)}</span>` : ""}${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ""}</div>
       ${noMarket && c.marketError ? `<div class="erractions"><span class="fine">${esc(c.marketError)}</span><button class="btn small" type="button" data-act="search-item" data-id="${esc(it.id)}">Karte suchen</button></div>` : ""}</div>
-      <div class="px">${money(num(c.priceEur) === null ? null : c.priceEur * (it.qty || 1))}${(it.qty || 1) > 1 ? `<small>${it.qty} × ${money(c.priceEur)}</small>` : srcLabel(c) ? `<small>${esc(srcLabel(c))}</small>` : ""}</div></li>`;
+      <div class="px">${money(num(c.priceEur) === null ? null : c.priceEur * (it.qty || 1))}${(it.qty || 1) > 1 ? `<small>${int(it.qty)} × ${money(c.priceEur)}</small>` : srcLabel(c) ? `<small>${esc(srcLabel(c))}</small>` : ""}</div></li>`;
   }
 
+  const INV_STEP = 60;
+  let invShown = INV_STEP, invKey = "", invList = [], invObs = null;
+  const invTile = c => `
+      <button class="tile" type="button" data-act="detail" data-id="${esc(c.id)}">
+        <div class="art">${imgTag(thumbOf(c.thumb, c), c.name)}${(c.qty || 1) > 1 ? `<span class="qty">×${int(c.qty)}</span>` : ""}</div>
+        <div class="info"><div class="nm">${esc(c.name)}</div><div class="num">${esc([c.setCode || c.set, c.number].filter(Boolean).join(" · ") || "–")}</div>
+        <div class="price">${money(c.priceEur)}${c.priceSource === "markt" ? "" : c.priceSource === "hand" ? '<span class="src">eigen</span>' : (num(c.priceEur) !== null ? '<span class="src">geschätzt</span>' : "")}</div></div>
+      </button>`;
+  function invWatch() {
+    if (invObs) { invObs.disconnect(); invObs = null; }
+    const more = $("#invMore"); if (!more) return;
+    invObs = new IntersectionObserver(es => {
+      if (!es.some(e => e.isIntersecting)) return;
+      const grid = $("#invGrid"); if (!grid) return;
+      const next = invList.slice(invShown, invShown + INV_STEP);
+      grid.insertAdjacentHTML("beforeend", next.map(invTile).join("")); invShown += next.length;
+      if (invShown >= invList.length) { invObs.disconnect(); invObs = null; more.remove(); }
+      else { invObs.unobserve(more); invObs.observe(more); } // check again in case the sentinel is still near
+    }, { rootMargin: "900px 0px" });
+    invObs.observe(more);
+  }
   function renderInv() {
     const cards = state.cards;
     ensureSets([...new Set(cards.map(setIdOf).filter(Boolean))]);
@@ -1574,12 +1610,13 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const g = $("#invGrid");
     if (!cards.length) { g.innerHTML = `<div class="empty"><div>Dein Inventar ist noch leer. Scanne deine ersten Karten, dann erscheinen sie hier mit Bild und Wert.</div><button class="btn primary" type="button" data-tab="scan">Zur Scan-Session</button></div>`; return; }
     if (!list.length) { g.innerHTML = `<div class="empty">Keine Karte passt zu „${esc(state.search)}“.</div>`; return; }
-    g.innerHTML = `<div class="grid">${list.map(c => `
-      <button class="tile" type="button" data-act="detail" data-id="${esc(c.id)}">
-        <div class="art">${imgTag(thumbOf(c.thumb, c), c.name)}${(c.qty || 1) > 1 ? `<span class="qty">×${c.qty}</span>` : ""}</div>
-        <div class="info"><div class="nm">${esc(c.name)}</div><div class="num">${esc([c.setCode || c.set, c.number].filter(Boolean).join(" · ") || "–")}</div>
-        <div class="price">${money(c.priceEur)}${c.priceSource === "markt" ? "" : c.priceSource === "hand" ? '<span class="src">eigen</span>' : (num(c.priceEur) !== null ? '<span class="src">geschätzt</span>' : "")}</div></div>
-      </button>`).join("")}</div>`;
+    // Build only the first screens; more tiles follow shortly before they scroll into view.
+    const key = state.search + "|" + state.sort;
+    if (key !== invKey) { invKey = key; invShown = INV_STEP; }
+    const n = window.IntersectionObserver ? Math.min(list.length, Math.max(invShown, INV_STEP)) : list.length;
+    invList = list; invShown = n;
+    g.innerHTML = `<div class="grid" id="invGrid">${list.slice(0, n).map(invTile).join("")}</div>${n < list.length ? `<div class="fine inv-more" id="invMore">Weitere Karten werden geladen …</div>` : ""}`;
+    invWatch();
   }
 
   const SET_SORTS = [["progress", "Fortschritt"], ["value", "Dein Wert"], ["missing", "Wenigste fehlend"], ["name", "Name"], ["new", "Neueste zuerst"], ["old", "Älteste zuerst"]];
@@ -1653,7 +1690,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       }
     }
     const up = movers.filter(m => m.dq > 0).sort((a, b) => b.dq - a.dq).slice(0, 5), down = movers.filter(m => m.dq < 0).sort((a, b) => a.dq - b.dq).slice(0, 5);
-    const mv = m => `<li><button type="button" class="mover" data-act="detail" data-id="${esc(m.c.id)}"><div class="mini">${imgTag(thumbOf(m.c.thumb, m.c), "")}</div><div style="min-width:0"><div class="nm">${esc(m.c.name)}</div><div class="sub">${money(m.old)} → ${money(m.now)}${(m.c.qty || 1) > 1 ? ` · ×${m.c.qty}` : ""}</div></div><div class="px ${deltaCls(m.dq)}">${signed(m.dq)}</div></button></li>`;
+    const mv = m => `<li><button type="button" class="mover" data-act="detail" data-id="${esc(m.c.id)}"><div class="mini">${imgTag(thumbOf(m.c.thumb, m.c), "")}</div><div style="min-width:0"><div class="nm">${esc(m.c.name)}</div><div class="sub">${money(m.old)} → ${money(m.now)}${(m.c.qty || 1) > 1 ? ` · ×${int(m.c.qty)}` : ""}</div></div><div class="px ${deltaCls(m.dq)}">${signed(m.dq)}</div></button></li>`;
     const rf = state.refreshing;
     v.innerHTML = `
       <section class="session-head">
@@ -1663,8 +1700,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       </section>
       <div class="stats stats2">${card("7 Tage", b7)}${card("30 Tage", b30)}</div>
       ${base && tech() ? `<div class="notice">Davon durch Preisänderungen am Markt: <strong class="${deltaCls(marketDelta)}">${signed(marketDelta)}</strong> seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))}. Der Rest kommt von neu hinzugefügten oder entfernten Karten.</div>` : ""}
-      ${up.length ? `<h3 class="sec">Gewinner</h3><ul class="movers">${up.map(mv).join("")}</ul>` : ""}
-      ${down.length ? `<h3 class="sec">Verlierer</h3><ul class="movers">${down.map(mv).join("")}</ul>` : ""}
+      ${up.length ? `<h2 class="sec">Gewinner</h2><ul class="movers">${up.map(mv).join("")}</ul>` : ""}
+      ${down.length ? `<h2 class="sec">Verlierer</h2><ul class="movers">${down.map(mv).join("")}</ul>` : ""}
       ${base && !movers.length ? `<p class="fine">Seit ${esc(dOnly(Date.parse(base.id + "T12:00:00")))} haben sich die Preise deiner Karten nicht verändert.</p>` : ""}
       <p class="fine">Die Preise werden einmal am Tag automatisch aktualisiert.</p>`;
   }
@@ -1675,8 +1712,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     if (!done.length) { v.innerHTML = `<div class="empty">Noch keine abgeschlossene Session. Hier steht später jede Session mit Datum, Kartenzahl und Endbetrag.</div>`; return; }
     const sum = done.reduce((s, x) => s + (x.total || 0), 0);
     v.innerHTML = `<div class="notice">${done.length} Session${done.length === 1 ? "" : "s"} · zusammen <strong class="mono">${money(sum)}</strong> beim Scannen</div>` +
-      done.map(s => `<details class="hist"><summary><div><div class="t">${esc(dt(s.finishedAt))}</div><div class="sub">${s.count || 0} Karte${s.count === 1 ? "" : "n"}</div></div><div class="px">${money(s.total)}</div></summary>
-        <ul>${(s.summary || []).map(x => `<li><span>${esc(x.name)}${x.qty > 1 ? ` ×${x.qty}` : ""} <span class="muted">${esc([x.set, x.number].filter(Boolean).join(" · "))}${x.priceSource && x.priceSource !== "markt" ? ` · ${x.priceSource === "hand" ? "eigen" : "geschätzt"}` : ""}</span></span><span class="mono">${money(num(x.priceEur) === null ? null : x.priceEur * (x.qty || 1))}</span></li>`).join("")}</ul></details>`).join("");
+      done.map(s => `<details class="hist"><summary><div><div class="t">${esc(dt(s.finishedAt))}</div><div class="sub">${int(s.count)} Karte${s.count === 1 ? "" : "n"}</div></div><div class="px">${money(s.total)}</div></summary>
+        <ul>${(s.summary || []).map(x => `<li><span>${esc(x.name)}${x.qty > 1 ? ` ×${int(x.qty)}` : ""} <span class="muted">${esc([x.set, x.number].filter(Boolean).join(" · "))}${x.priceSource && x.priceSource !== "markt" ? ` · ${x.priceSource === "hand" ? "eigen" : "geschätzt"}` : ""}</span></span><span class="mono">${money(num(x.priceEur) === null ? null : x.priceEur * (x.qty || 1))}</span></li>`).join("")}</ul></details>`).join("");
   }
 
   // ---------- admin area (only accounts listed in public.admins; the server checks this too) ----------
@@ -1862,10 +1899,20 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   }
 
   // ---------- sheets ----------
-  function openSheet(s) { state.sheet = s; renderSheet(); }
+  // A sheet is a modal dialog: remember what opened it, make the page behind it inert, give the focus back on close.
+  let sheetOpener = null;
+  const backdrop = () => [document.querySelector(".wrap"), $("#nav")].filter(Boolean);
+  const focusables = el => [...el.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')].filter(e => !e.disabled && e.offsetParent !== null);
+  function openSheet(s) {
+    if (!state.sheet) sheetOpener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+    state.sheet = s; renderSheet();
+  }
   function closeSheet() {
     state.sheet = null; sheetDrag = null;
     const r = $("#sheetRoot"); r.dataset.key = ""; document.body.style.overflow = "";
+    backdrop().forEach(e => { e.inert = false; });
+    const back = sheetOpener; sheetOpener = null;
+    if (back && back.isConnected && r.contains(document.activeElement)) try { back.focus({ preventScroll: true }); } catch (_) {}
     const sc = r.querySelector(".scrim:not(.leaving)");
     r.querySelectorAll(".scrim.leaving").forEach(x => x.remove());
     if (!sc || calm()) { r.innerHTML = ""; return; }
@@ -1981,7 +2028,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       title = "Session abschließen";
       body = `<div class="stack">
         <div class="endbetrag"><div class="eyebrow">Endbetrag dieser Session</div><div class="big">${money(total)}</div><div>${count} Karte${count === 1 ? "" : "n"}</div></div>
-        ${(dv = sessionDupes(), "")}<ul class="compact">${ok.map(i => swipeWrap(i.id, `<div class="cline swipe-fg"><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ""} <span class="muted">${esc([i.card.number, srcLabel(i.card)].filter(Boolean).join(" · "))}</span>${(dv.get(i.id) || {}).ses ? ' <span class="chip warn">doppelt</span>' : ""}</span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span><button class="icon-del" type="button" data-act="del-item" data-id="${esc(i.id)}" aria-label="${esc(i.card.name)} entfernen">${I.trash}</button></div>`)).join("")}</ul>
+        ${(dv = sessionDupes(), "")}<ul class="compact">${ok.map(i => swipeWrap(i.id, `<div class="cline swipe-fg"><span>${esc(i.card.name)}${(i.qty || 1) > 1 ? ` ×${int(i.qty)}` : ""} <span class="muted">${esc([i.card.number, srcLabel(i.card)].filter(Boolean).join(" · "))}</span>${(dv.get(i.id) || {}).ses ? ' <span class="chip warn">doppelt</span>' : ""}</span><span class="mono">${money(num(i.card.priceEur) === null ? null : i.card.priceEur * (i.qty || 1))}</span><button class="icon-del" type="button" data-act="del-item" data-id="${esc(i.id)}" aria-label="${esc(i.card.name)} entfernen">${I.trash}</button></div>`)).join("")}</ul>
         <p class="fine" style="margin:0">Doppelt gescannt? Nach rechts wischen oder auf den Mülleimer tippen.</p>
         <p class="fine">Die Preise gelten für Karten in sehr gutem Zustand.${ki ? ` ${ki} Karte${ki === 1 ? " ist" : "n sind"} geschätzt.` : ""}${tech() ? " Grundlage: Cardmarket-Trend (Near Mint) über TCGdex." : ""}</p>
         <button class="btn primary block" type="button" data-act="commit" ${state.busy ? "disabled" : ""}>${state.busy ? "Wird übernommen …" : "Zum Inventar hinzufügen"}</button>
@@ -1989,8 +2036,8 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     } else if (s.type === "done") {
       title = "Session abgeschlossen";
       body = `<div class="stack">
-        <div class="endbetrag"><div class="coins" aria-hidden="true"></div><div class="eyebrow">Endbetrag</div><div class="big mono" aria-label="${esc(money(s.total))}">${money(s.played || calm() || !(s.total > 0) ? s.total : 0)}</div><div>${s.count} Karte${s.count === 1 ? "" : "n"} übernommen</div></div>
-        <p class="muted" style="margin:0">${s.added} neu im Inventar${s.merged ? `, ${s.merged} zu vorhandenen Karten dazugezählt` : ""}.</p>
+        <div class="endbetrag"><div class="coins" aria-hidden="true"></div><div class="eyebrow">Endbetrag</div><div class="big mono" aria-label="${esc(money(s.total))}">${money(s.played || calm() || !(s.total > 0) ? s.total : 0)}</div><div>${int(s.count)} Karte${s.count === 1 ? "" : "n"} übernommen</div></div>
+        <p class="muted" style="margin:0">${int(s.added)} neu im Inventar${s.merged ? `, ${int(s.merged)} zu vorhandenen Karten dazugezählt` : ""}.</p>
         <div class="actions"><button class="btn" type="button" data-act="close">Neue Session</button><button class="btn primary" type="button" data-act="goinv">Inventar ansehen</button></div>
       </div>`;
     } else if (s.type === "discard") {
@@ -2057,7 +2104,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         <label>Sprache<select class="field" id="f-language" name="language"><option value="">–</option>${opt(LANGS, c.language)}</select></label>
         <label>Zustand<select class="field" id="f-condition" name="condition">${opt(CONDITIONS, c.condition || "NM")}</select></label>
         <label>Eigener Preis (€)<input class="field mono" id="f-price" name="priceEur" inputmode="decimal" value="${esc(priceInput(c.priceEur))}" placeholder="0,00"></label>
-        <label>Menge<input class="field mono" id="f-qty" name="qty" type="number" min="1" max="999" value="${src.qty || 1}"></label>
+        <label>Menge<input class="field mono" id="f-qty" name="qty" type="number" min="1" max="999" value="${int(src.qty) || 1}"></label>
         <datalist id="variants"><option value="Normal"><option value="Holo"><option value="Reverse Holo"><option value="1st Edition"><option value="Shadowless"><option value="Promo"></datalist>
         <p class="fine full" style="margin:0">Ein eigener Preis bleibt bei Aktualisierungen erhalten. Leer lassen, um wieder den Marktpreis zu nutzen.</p>
         <button class="btn primary full" type="submit">Speichern</button>
@@ -2116,7 +2163,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
         const tile = c => {
           const o = owned.get(c.id), price = pv(c);
           const im = c.image ? `<img src="${esc(c.image)}/low.webp" alt="" loading="lazy">` : `<span class="noimg">${esc(c.localId)}</span>`;
-          const inner = `<div class="sart">${im}${o && o.qty > 1 ? `<span class="qty">×${o.qty}</span>` : ""}</div><div class="sinfo"><span class="mono">${esc(c.localId)}</span> ${esc(c.name)}${price != null ? `<b>${esc(money(price))}</b>` : ""}</div>`;
+          const inner = `<div class="sart">${im}${o && o.qty > 1 ? `<span class="qty">×${int(o.qty)}</span>` : ""}</div><div class="sinfo"><span class="mono">${esc(c.localId)}</span> ${esc(c.name)}${price != null ? `<b>${esc(money(price))}</b>` : ""}</div>`;
           return o ? `<button class="stile own" type="button" data-act="detail" data-id="${esc(o.cards[0].id)}">${inner}</button>`
                    : `<a class="stile miss" href="https://www.cardmarket.com/de/Pokemon/Products/Search?searchString=${encodeURIComponent((c.nameEn || c.name) + " " + c.localId)}" target="_blank" rel="noopener">${inner}</a>`;
         };
@@ -2200,7 +2247,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
           <p class="gf">Deine Sammlung ist in deinem Konto gespeichert. Ein Backup ist eine zusätzliche Kopie als Datei.</p></section>
         ${NATIVE ? `<section><h3 class="gh">App</h3>
           <div class="group"><div class="cell"><span>Version</span><span class="val">${app.build ? `Build ${app.build}` : "–"}</span></div>${app.update ? link("app-update", "Update laden", `Build ${app.update}`) : ""}</div>
-          <p class="gf">${app.update ? (ANDROID ? "Eine neue Version ist da. Lade die APK herunter und installiere sie über die alte App; deine Daten bleiben erhalten." : "Eine neue Version ist da. Lade sie herunter und spiel sie mit Sideloadly über die alte App; deine Daten bleiben erhalten.") : "Du hast die aktuelle Version."}</p></section>` : ""}
+          <p class="gf">${app.update ? "Eine neue Version ist da. Lade sie herunter und spiel sie mit Sideloadly über die alte App; deine Daten bleiben erhalten." : "Du hast die aktuelle Version."}</p></section>` : ""}
         <section><h3 class="gh">Werkzeuge</h3><div class="group">${link("admin", "Tests, Technik und Wartung")}</div></section>
         <div class="group"><button class="cell action danger center" type="button" data-act="logout">Abmelden</button></div>
         <p class="fine legal">Preise: Cardmarket über <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a>. Pokémon ist eine Marke von Nintendo, Creatures und GAME FREAK. Privates Fanprojekt.</p>
@@ -2254,11 +2301,22 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
     const prevSheet = root.querySelector(".scrim:not(.leaving) .sheet"), sheetKey = s.type + ":" + (s.id || "");
     const same = !!prevSheet && root.dataset.key === sheetKey;
     const keepScroll = prevSheet && root.dataset.key === sheetKey ? prevSheet.scrollTop : 0;
-    const focused = document.activeElement && root.contains(document.activeElement) && document.activeElement.id ? document.activeElement.id : null;
-    root.innerHTML = `<div class="scrim${same ? " still" : ""}" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+    const act = document.activeElement, hadFocus = !!act && root.contains(act);
+    const focused = hadFocus && act.id ? act.id : null;
+    // To find the same control again after the sheet is rebuilt: its action plus what it refers to.
+    const again = hadFocus && !focused && act.dataset && act.dataset.act ? `[data-act="${act.dataset.act}"]` + ["id", "pane", "mode", "min", "max"].map(k => act.dataset[k] != null ? `[data-${k}="${CSS.escape(act.dataset[k])}"]` : "").join("") : null;
+    root.innerHTML = `<div class="scrim${same ? " still" : ""}" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}" tabindex="-1">
       <div class="sheet-head"><h2>${esc(title)}</h2><button class="x" type="button" data-act="close" aria-label="Schließen">×</button></div>${body}</div></div>`;
     root.dataset.key = sheetKey;
     if (keepScroll) root.querySelector(".sheet").scrollTop = keepScroll;
+    backdrop().forEach(e => { e.inert = true; });
+    {
+      const sh = root.querySelector(".scrim:not(.leaving) .sheet");
+      let to = null;
+      if (same && focused) to = document.getElementById(focused); else if (same && again) { try { to = sh.querySelector(again); } catch (_) {} }
+      if (!same || (hadFocus && !to)) to = sh; // new sheet: start at its top, without opening the keyboard
+      if (to && !(focused === "pmin" || focused === "pmax")) try { to.focus({ preventScroll: true }); } catch (_) {}
+    }
     if (focused && (focused === "pmin" || focused === "pmax")) { const el = $("#" + focused); if (el) { el.focus(); const n = el.value.length; try { el.setSelectionRange(n, n); } catch (_) {} } }
     if (s.type === "done") playDone(s);
     const sm = $("#set-model"); if (sm) sm.onchange = () => { settings.model = sm.value; toast(sm.value === MODELS[0][0] ? "Modus: genau." : "Modus: schnell & günstig."); };
@@ -2411,6 +2469,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
       case "app-update": if (releasePage()) window.open(releasePage(), "_blank"); break;
       case "key-del": settings.apiKey = ""; toast("Schlüssel entfernt."); if (state.sheet) { state.sheet.edit = false; renderSheet(); } render(); break;
       case "export": exportData(); break;
+      case "backup-later": try { localStorage.setItem("ks-backuplater", String(Date.now())); } catch (_) {} render(); break;
       case "logout": closeSheet(); dropDeviceCopy(); sb.auth.signOut({ scope: "local" }).catch(() => {}); break;
       case "migrate": migrateLegacy(); break;
       case "login-email": openSheet({ type: "login-email" }); break;
@@ -2426,6 +2485,15 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   });
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") { if (!$("#camera").hidden) { closeCamera(); render(); } else if (state.sheet) closeSheet(); }
+    if (e.key === "Tab" && state.sheet && $("#camera").hidden) { // keep the focus inside the open sheet
+      const sh = $("#sheetRoot .scrim:not(.leaving) .sheet"), f = sh ? focusables(sh) : [];
+      if (f.length) {
+        const a = document.activeElement, first = f[0], last = f[f.length - 1];
+        if (!sh.contains(a) || a === sh) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+        else if (e.shiftKey && a === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+      }
+    }
     if ((e.key === "Enter" || e.key === " ") && e.target.matches("[role=button][data-act]")) { e.preventDefault(); e.target.click(); }
   });
   $("#camFallback").addEventListener("change", e => { handleFiles(e.target.files); e.target.value = ""; });
@@ -2566,7 +2634,7 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   // ---------- staying signed in ----------
   // The app has one owner: the login is kept on this device until "Abmelden". Older versions logged out
   // on close or after inactivity; their leftover settings are removed here.
-  try { for (const k of ["ks-closelogout", "ks-idle", "ks-active"]) localStorage.removeItem(k); sessionStorage.removeItem("ks-open"); } catch (_) {}
+  try { for (const k of ["ks-closelogout", "ks-idle", "ks-active", "ks-login", "ks-username"]) localStorage.removeItem(k); sessionStorage.removeItem("ks-open"); } catch (_) {}
 
   render();
   if (!window.supabase || !CFG.supabaseUrl || !CFG.supabaseKey) {
@@ -2589,15 +2657,6 @@ Wenn auf dem Foto keine Pokémon-Karte zu sehen ist: {"isCard": false}`;
   if (NATIVE) {
     requestAnimationFrame(() => requestAnimationFrame(() => { const sp = plug("SplashScreen"); if (sp) try { quiet(sp.hide({ fadeOutDuration: 0 })); } catch (_) {} }));
     setTimeout(checkAppUpdate, 2500);
-    const appPlugin = plug("App");
-    if (ANDROID && appPlugin) try {
-      quiet(appPlugin.addListener("backButton", () => {
-        if (camOpen()) { closeCamera(); return; }
-        if (state.sheet) { closeSheet(); render(); return; }
-        if (state.user && state.tab !== "scan") { state.tab = "scan"; render(); window.scrollTo(0, 0); updateBar(); return; }
-        quiet(appPlugin.minimizeApp());
-      }));
-    } catch (_) {}
   }
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

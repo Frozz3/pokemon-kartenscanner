@@ -186,6 +186,8 @@ grant execute on function public.setup_open() to anon, authenticated;
 create or replace function public.only_one_account() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
+  -- Eine Registrierung nach der anderen: sonst könnten zwei gleichzeitige beide ein leeres System sehen.
+  perform pg_advisory_xact_lock(hashtext('kartenscanner.only_one_account'));
   if exists (select 1 from auth.users) then
     raise exception 'Diese App hat schon ein Konto.' using errcode = '42501';
   end if;

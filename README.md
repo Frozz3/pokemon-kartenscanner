@@ -1,6 +1,6 @@
 # Pokémon Kartenscanner
 
-App für iPhone und Android: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardmarket-Preisen bewerten und in einem Inventar sammeln. Jede App gehört **einer Person**: ein Konto, einmal anmelden, danach bleibt man angemeldet. Wer sie auch nutzen will, baut sich eine **eigene Instanz** mit eigenem Server und eigener App bauen, ohne Code zu ändern (siehe [Eigene Instanz](#eigene-instanz-selbst-hosten)).
+App fürs iPhone: Pokémon-Karten mit der Kamera scannen, mit aktuellen Cardmarket-Preisen bewerten und in einem Inventar sammeln. Jede App gehört **einer Person**: ein Konto, einmal anmelden, danach bleibt man angemeldet. Wer sie auch nutzen will, baut sich eine **eigene Instanz** mit eigenem Server und eigener App bauen, ohne Code zu ändern (siehe [Eigene Instanz](#eigene-instanz-selbst-hosten)).
 
 ## Funktionen
 
@@ -21,17 +21,6 @@ App für iPhone und Android: Pokémon-Karten mit der Kamera scannen, mit aktuell
 - **Design im iOS-Stil** mit Systemschrift, großen Titeln, die beim Scrollen in die Leiste wandern, gruppierten Listen und Einstellungen wie in der Einstellungen-App (mit Schaltern für Auto-Auslöser und Ton); **Hell oder dunkel automatisch wie das System**, ohne eigenen Schalter in der App (so empfiehlt es Apple).
 - **Bewegung wie auf dem iPhone:** Fenster gleiten von unten herein und lassen sich nach unten wegwischen, Knöpfe federn beim Tippen, Seitenwechsel blenden weich über. Am Ende einer Session zählt der Endbetrag hoch, landet mit Kassen-Sound und einem Münzregen. Eigener Startbildschirm (hell und dunkel) für alle aktuellen iPhones. Wer in iOS „Bewegung reduzieren“ eingeschaltet hat, bekommt keine Animationen.
 - **Schnell:** Die App merkt sich deine Daten auf dem Gerät und zeigt sie sofort beim Start, auch ohne Verbindung. Danach lädt sie nur, was sich seit dem letzten Mal geändert hat (einmal am Tag zur Sicherheit alles). Sessions werden gebündelt gespeichert, Preise parallel aktualisiert; gleiche Karten werden dabei nur einmal abgefragt.
-
-## Android-App
-
-GitHub baut die Android-App bei jeder Änderung automatisch (Workflow `.github/workflows/android-app.yml`) und legt die neueste Datei hier ab:
-**https://github.com/Frozz3/pokemon-kartenscanner/releases/download/android-latest/Kartenscanner.apk**
-
-1. Den Link auf dem Android-Handy öffnen und die Datei herunterladen.
-2. Datei öffnen. Android fragt beim ersten Mal, ob der Browser Apps installieren darf: **Einstellungen → Diese Quelle zulassen**, dann zurück und **Installieren**.
-3. App öffnen, einmal anmelden (bei einer neuen Instanz: Konto einrichten), Erkennung einrichten.
-
-Updates: neue APK genauso herunterladen und über die alte App installieren; die Daten bleiben erhalten. Die App meldet unter Einstellungen → App, wenn eine neue Version bereitliegt. Die Zurück-Taste schließt zuerst offene Fenster und die Kamera, dann geht sie zum Scannen-Tab.
 
 ## iOS-App (Sideloading, ohne Mac)
 
@@ -72,7 +61,7 @@ Einrichtung:
 
 1. Auf supabase.com ein Konto anlegen → **New project**, Region **Central EU (Frankfurt)**.
 2. **SQL Editor** → Inhalt von [`supabase/schema.sql`](supabase/schema.sql) einfügen → **Run**.
-3. **Project Settings → API:** Project URL und den `anon`/`publishable` Key notieren. Für die Apps kommen sie als GitHub-Variablen in den Build (siehe [Eigene Instanz](#eigene-instanz-selbst-hosten)); `config.js` gilt nur für die Web-Version dieses Repos. Den `service_role`/`secret` Key niemals verwenden, der Build lehnt ihn ab.
+3. **Project Settings → API:** Project URL und den `anon`/`publishable` Key notieren. Für die App kommen sie als GitHub-Variablen in den Build (siehe [Eigene Instanz](#eigene-instanz-selbst-hosten)); `config.js` gilt nur für die Web-Version dieses Repos. Den `service_role`/`secret` Key niemals verwenden, der Build lehnt ihn ab.
 4. **Authentication → Sign In / Providers → „Confirm email“ ausschalten** (Supabase kennt nur den Hash, eine Bestätigungs-Mail käme nie an).
 5. **„Allow new users to sign up“ eingeschaltet lassen**, bis das Konto angelegt ist. Danach ist es egal: `schema.sql` sorgt dafür, dass der Server nur ein einziges Konto annimmt.
 6. Die App öffnen: Solange es noch kein Konto gibt, zeigt sie **„Konto einrichten“**. E-Mail und Passwort festlegen, fertig.
@@ -106,36 +95,13 @@ Jeder kann den Kartenscanner mit **eigenem Server** und **eigener App** betreibe
 
 Der Build trägt die Adresse auch in die Sicherheitsregeln (CSP) ein, die App spricht dann nur mit genau diesem Server. Ohne diese Variablen bricht der Build in einem Fork mit einem Hinweis ab, damit kein Fork aus Versehen fremde Server nutzt.
 
-**4. Android-Signaturschlüssel anlegen (einmalig)**
+**4. App bauen:** Reiter **Actions** → „iOS-App bauen“ → **Run workflow**. Nach etwa 10 Minuten liegt die Datei unter
+`https://github.com/<dein-name>/<dein-repo>/releases/download/ios-latest/Kartenscanner.ipa`.
+Danach baut GitHub bei jeder Änderung im Fork automatisch neu. Die App fragt für Update-Hinweise genau diesen Fork.
 
-Android installiert Updates nur, wenn sie mit demselben Schlüssel signiert sind. Den Schlüssel einmal erzeugen und gut aufheben, zum Beispiel im Passwort-Manager. Geht er verloren, muss die App vor dem nächsten Update deinstalliert werden. Dafür braucht es Java, etwa das kostenlose [Temurin JDK](https://adoptium.net):
+**5. Konto einrichten:** Die eigene App öffnen und unter **„Konto einrichten“** E-Mail und Passwort festlegen. Danach nimmt der Server keine weiteren Konten an.
 
-```bash
-keytool -genkeypair -v -keystore kartenscanner.jks -alias kartenscanner -keyalg RSA -keysize 4096 -validity 10000
-```
-
-Dann die Datei als Text umwandeln:
-- Windows PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("kartenscanner.jks")) | Set-Clipboard`
-- macOS/Linux: `base64 -w0 kartenscanner.jks`
-
-Im Fork unter **Settings → Secrets and variables → Actions → Secrets → New repository secret** anlegen:
-
-| Secret | Wert |
-|---|---|
-| `ANDROID_KEYSTORE_BASE64` | der umgewandelte Text |
-| `ANDROID_KEYSTORE_PASSWORD` | das Passwort aus `keytool` |
-| `ANDROID_KEY_ALIAS` | `kartenscanner` |
-| `ANDROID_KEY_PASSWORD` | nur, wenn der Schlüssel ein eigenes Passwort hat |
-
-Ohne diese Secrets baut GitHub trotzdem eine APK, aber mit einer wechselnden Test-Signatur. Dann muss man vor jedem Update die alte App deinstallieren.
-
-**5. Apps bauen:** Reiter **Actions** → „Android-App bauen“ bzw. „iOS-App bauen“ → **Run workflow**. Nach 5 bis 15 Minuten liegen die Dateien unter
-`https://github.com/<dein-name>/<dein-repo>/releases/download/android-latest/Kartenscanner.apk` und `…/ios-latest/Kartenscanner.ipa`.
-Danach baut GitHub bei jeder Änderung im Fork automatisch neu. Die Apps fragen für Update-Hinweise genau diesen Fork.
-
-**6. Konto einrichten:** Die eigene App öffnen und unter **„Konto einrichten“** E-Mail und Passwort festlegen. Danach nimmt der Server keine weiteren Konten an.
-
-**Updates vom Original übernehmen:** Im Fork auf **Sync fork → Update branch**. GitHub baut die Apps dann neu. Wenn sich `supabase/schema.sql` geändert hat, die Datei noch einmal im SQL Editor ausführen.
+**Updates vom Original übernehmen:** Im Fork auf **Sync fork → Update branch**. GitHub baut die App dann neu. Wenn sich `supabase/schema.sql` geändert hat, die Datei noch einmal im SQL Editor ausführen.
 
 ### Bestehendes Konto auf E-Mail-Hash umstellen
 
@@ -161,7 +127,7 @@ Danach in der App unter Einstellungen → **Passwort ändern** ein neues Passwor
 - Nur das eine Konto kommt an Karten und Fotos (Row Level Security). Weitere Konten lehnt die Datenbank selbst ab (Trigger `only_one_account`), auch wenn jemand die App umgeht. Von außen ist nur eine Ja/Nein-Abfrage möglich, ob schon ein Konto existiert (`setup_open`).
 - Angemeldet bleiben heißt: Wer dein entsperrtes Handy hat, sieht deine Sammlung. Für mehr Schutz die Bildschirmsperre des Handys nutzen oder in der App „Abmelden“ tippen.
 - Für Sideloadly/SideStore am besten eine zweite Apple-ID nehmen, nicht die Haupt-ID.
-- Der Android-Signaturschlüssel liegt nur als verschlüsseltes GitHub-Secret vor, wird im Build nur kurz in eine temporäre Datei geschrieben und danach gelöscht. Der Build bricht ab, wenn als `SUPABASE_KEY` ein geheimer Schlüssel eingetragen ist.
+- Der Build bricht ab, wenn als `SUPABASE_KEY` ein geheimer Schlüssel eingetragen ist.
 
 ## Technik
 
@@ -177,12 +143,11 @@ Reines HTML, CSS und JavaScript ohne Build-Schritt:
 | `supabase/username-migration.sql` | Ältere Variante: Konto auf Benutzernamen umstellen (nicht mehr nötig) |
 | `vendor/supabase.js` | Supabase-Client 2.117.3 (MIT-Lizenz) |
 | `sw.js` | Service Worker für Offline-Start |
-| `package.json`, `capacitor.config.json` | App-Hülle für iOS und Android (Capacitor 8) |
-| `scripts/build-web.mjs` | Web-Dateien für die Apps vorbereiten, Einstellungen der Instanz übernehmen (Server, CSP, App-Kennung, Update-Quelle) |
-| `scripts/ios-customize.sh`, `scripts/android-customize.sh` | Xcode- bzw. Android-Projekt anpassen (Kamera-Erlaubnis, Hochformat, Icons, Startbildschirm, Farben) |
-| `resources/` | App-Icon und Startbilder; `resources/android/` adaptive Android-Icons |
+| `package.json`, `capacitor.config.json` | App-Hülle für iOS (Capacitor 8) |
+| `scripts/build-web.mjs` | Web-Dateien für die App vorbereiten, Einstellungen der Instanz übernehmen (Server, CSP, App-Kennung, Update-Quelle) |
+| `scripts/ios-customize.sh` | Xcode-Projekt anpassen (Kamera-Erlaubnis, Hochformat, Icons, Startbildschirm) |
+| `resources/` | App-Icon und Startbilder |
 | `.github/workflows/ios-app.yml` | Baut die unsignierte `.ipa` (Release `ios-latest`) |
-| `.github/workflows/android-app.yml` | Baut und signiert die `.apk` (Release `android-latest`) |
 | `manifest.webmanifest`, `icons/` | PWA-Angaben, App-Icons und Startbilder (`icons/splash/`) |
 
 Dieselben Dateien laufen auch als Web-App im Browser. GitHub Pages ist dafür derzeit aus; bei Bedarf wieder einschalten unter Settings → Pages → Source „Deploy from a branch“, Branch `main`, Ordner `/ (root)`.

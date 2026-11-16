@@ -1,14 +1,12 @@
 {
   "name": "pokemon-kartenscanner",
   "private": true,
-  "description": "Pokémon-Karten scannen und bewerten. iOS- und Android-App (Capacitor), selbst hostbar.",
+  "description": "Pokémon-Karten scannen und bewerten. iOS-App (Capacitor), selbst hostbar.",
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
     "test": "node --test"
   },
   "devDependencies": {
-    "@capacitor/android": "8.5.3",
-    "@capacitor/app": "8.1.2",
     "@capacitor/cli": "8.5.3",
     "@capacitor/core": "8.5.3",
     "@capacitor/filesystem": "8.1.5",
